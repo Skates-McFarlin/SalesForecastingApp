@@ -1,0 +1,12 @@
+{
+    "appId": "com.insighta.app",
+    "productName": "Insighta",
+    "directories": {
+        "output": "dist-electron"
+    },
+    "win": {
+        "target": "nsis",
+        "icon": "icon.ico"
+    },
+    "asar": false
+}

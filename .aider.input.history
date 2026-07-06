@@ -1,0 +1,50 @@
+
+# 2026-07-06 09:58:42.191372
++n
+
+# 2026-07-06 09:59:01.887633
++Find where GPT2 is loaded and used. What task is it performing?
+
+# 2026-07-06 10:01:19.498607
++/add backend/app
+
+# 2026-07-06 10:01:56.447397
++Where is GPT2 loaded and used in this codebase? What task is it performing?
+
+# 2026-07-06 10:02:27.662761
++/drop backend/app/models/gpt2
+
+# 2026-07-06 10:02:36.873317
++/add backend/app/models/prediction.py
++/add backend/app/api/prediction_api.py
++/add backend/app/controllers/prediction_controller.py
+
+# 2026-07-06 10:02:41.797385
++n
+
+# 2026-07-06 10:02:49.824971
++/add backend/app/models/prediction.py
+
+# 2026-07-06 10:03:02.079119
++/drop backend/app
+
+# 2026-07-06 10:03:38.496501
++/drop backend\app
+
+# 2026-07-06 10:03:47.102049
++/add backend\app\models\prediction.py
+
+# 2026-07-06 10:03:55.170982
++/add backend\app\api\prediction_api.py
+
+# 2026-07-06 10:04:02.884470
++/add backend\app\controllers\prediction_controller.py
+
+# 2026-07-06 10:04:22.705607
++Where is GPT2 loaded and used? What task is it performing?
+
+# 2026-07-06 10:04:46.573239
++n
+
+# 2026-07-06 10:12:05.245125
++/exit
