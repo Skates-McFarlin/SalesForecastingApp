@@ -204,6 +204,29 @@ def classify_products_batch(product_names, max_workers=8):
         return dict(executor.map(classify_one, product_names))
 
 
+def _trend_sentence(percent_change, forecast, last_year_sales):
+    """Spell out the year-over-year direction in words for the prompt."""
+    try:
+        pct = float(percent_change)
+    except (TypeError, ValueError):
+        return (
+            "No comparable prior-year period exists in this data, so there is no "
+            "year-over-year change to report. Do not invent a percentage."
+        )
+
+    if pct > 0:
+        return (
+            f"Forecasted sales are HIGHER than last year - an INCREASE of "
+            f"{abs(pct):.1f}% ({forecast} units forecast vs {last_year_sales} last year)."
+        )
+    if pct < 0:
+        return (
+            f"Forecasted sales are LOWER than last year - a DECREASE of "
+            f"{abs(pct):.1f}% ({forecast} units forecast vs {last_year_sales} last year)."
+        )
+    return f"Forecasted sales are FLAT versus last year ({forecast} units, unchanged)."
+
+
 def generate_summary(product, percent_change, forecast, last_year_sales, duration, tags, portfolio_context=None):
     """Generate a natural language inventory-flow summary using Qwen2.5-1.5B-Instruct.
 
@@ -217,14 +240,22 @@ def generate_summary(product, percent_change, forecast, last_year_sales, duratio
     """
     portfolio_block = f"\n- Portfolio Context: {portfolio_context}" if portfolio_context else ""
 
+    # State the direction in words rather than leaving the model to infer it
+    # from a signed number - a small model reads "7.21%" against a larger
+    # forecast and still writes "a decrease of 7.21%" a fair share of the time.
+    trend_block = f"\n- Year-over-year comparison: {_trend_sentence(percent_change, forecast, last_year_sales)}"
+
     prompt = f"""You are an expert inventory and sales forecasting analyst.
 
 Based on the data below, write a concise, professional summary (3-5 sentences) covering:
 1. Outbound inventory: how many units of this product are forecasted to leave inventory (be sold) over the period
 2. Inbound inventory: how many units should be restocked/received to cover that forecasted demand without stocking out
-3. How this period compares to the same period last year (trend direction and % change), and whether that looks like normal seasonal movement for this product's category or an actual demand shift
+3. How this period compares to the same period last year, and whether that looks like normal seasonal movement for this product's category or an actual demand shift
 4. If portfolio context is provided, how this product is performing relative to the rest of its category in this dataset
 5. Any actionable recommendation for purchasing or replenishment planning
+
+Only state the direction of change given below. Do not describe an increase as a
+decrease, or a decrease as an increase.
 
 Data:
 - Product Name: {product}
@@ -232,8 +263,7 @@ Data:
 - Seasonality: {tags['seasonality']}
 - Forecast Period: {duration}
 - Forecasted Units Out (Sales): {forecast}
-- Last Year Actual Units Out (Sales): {last_year_sales}
-- % Change from Previous Year: {percent_change}%{portfolio_block}
+- Last Year Actual Units Out (Sales): {last_year_sales}{trend_block}{portfolio_block}
 
 Write the summary in a clear, professional tone suitable for a business inventory report.
 """

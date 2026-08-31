@@ -9,3 +9,6 @@ backend/*.spec
 electron/node_modules/
 electron/dist/
 electron/dist-electron/
+# Generated from frontend/ by `npm run build:frontend` (wired into predist).
+electron/build/
+frontend/node_modules/

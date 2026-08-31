@@ -4,7 +4,10 @@
   "description": "Sale forecasting APp",
   "main": "main.js",
   "scripts": {
+    "build:frontend": "npm --prefix ../frontend run build",
+    "prestart": "npm run build:frontend",
     "start": "electron .",
+    "predist": "npm run build:frontend",
     "dist": "electron-builder"
   },
   "keywords": [],
