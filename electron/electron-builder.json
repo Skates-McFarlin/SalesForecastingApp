@@ -1,0 +1,25 @@
+{
+    "appId": "com.insighta.app",
+    "productName": "Insighta",
+    "directories": {
+        "output": "dist-electron"
+    },
+    "files": [
+        "main.js",
+        "package.json",
+        "icon.ico",
+        "build/**/*"
+    ],
+    "extraResources": [
+        {
+            "from": "../backend/dist/run",
+            "to": "backend"
+        }
+    ],
+    "win": {
+        "target": "nsis",
+        "icon": "icon.ico",
+        "signAndEditExecutable": false
+    },
+    "asar": false
+}

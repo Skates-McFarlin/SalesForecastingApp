@@ -2,3 +2,10 @@
 __pycache__/
 *.pyc
 backend/app/models/qwen2_5/
+backend/instance/
+backend/build/
+backend/dist/
+backend/*.spec
+electron/node_modules/
+electron/dist/
+electron/dist-electron/

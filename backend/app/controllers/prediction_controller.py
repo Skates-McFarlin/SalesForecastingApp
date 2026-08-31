@@ -2,6 +2,8 @@ import json
 import csv
 from datetime import datetime
 import re
+import threading
+import time
 from prophet import Prophet
 import pandas as pd
 import numpy as np
@@ -10,16 +12,76 @@ from app.models.prediction import Prediction
 from app.models.file import File
 from app.extensions import db
 from transformers import AutoModelForCausalLM, AutoTokenizer, GenerationConfig
+from huggingface_hub import snapshot_download
 import os
 
-# Model path: Qwen2.5-1.5B-Instruct (instruction-tuned)
-MODEL_PATH = os.path.join(os.path.dirname(__file__), "..", "models", "qwen2_5")
-tokenizer = AutoTokenizer.from_pretrained(MODEL_PATH)
-model = AutoModelForCausalLM.from_pretrained(MODEL_PATH, torch_dtype=torch.bfloat16)
-model.config.pad_token_id = tokenizer.pad_token_id
-model.eval()
-
 ENABLE_AI_SUMMARY = True
+
+QWEN_REPO_ID = "Qwen/Qwen2.5-1.5B-Instruct"
+
+# Persistent, always-writable location (survives reinstalls, works regardless
+# of install-dir permissions) - same pattern as the SQLite DB path.
+_appdata = os.getenv("LOCALAPPDATA")
+MODEL_PATH = (
+    os.path.join(_appdata, "Insighta", "models", "qwen2_5")
+    if _appdata
+    else os.path.join(os.path.dirname(__file__), "..", "models", "qwen2_5")
+)
+
+tokenizer = None
+model = None
+model_status = {"status": "starting", "ready": False, "error": None}
+
+
+def _model_already_present():
+    """Check whether a complete model already sits at MODEL_PATH.
+
+    Checks both a config file and the weights (not just one file) and
+    retries briefly: a freshly-installed, unsigned exe's first filesystem
+    access can be transiently delayed (e.g. antivirus scanning), which can
+    make a single os.path.exists() check falsely report "missing" and
+    trigger an unnecessary multi-minute Hub verification pass.
+    """
+    config_path = os.path.join(MODEL_PATH, "config.json")
+    weights_path = os.path.join(MODEL_PATH, "model.safetensors")
+    for _ in range(5):
+        if os.path.isfile(config_path) and os.path.isfile(weights_path):
+            return True
+        time.sleep(1)
+    return False
+
+
+def _load_model():
+    """Download (first run only) and load the Qwen model in the background.
+
+    Runs off the main thread so Flask can start serving immediately and
+    report real progress via /api/health instead of blocking startup.
+    """
+    global tokenizer, model
+    try:
+        if not _model_already_present():
+            model_status["status"] = "downloading_model"
+            os.makedirs(MODEL_PATH, exist_ok=True)
+            snapshot_download(
+                repo_id=QWEN_REPO_ID,
+                local_dir=MODEL_PATH,
+                ignore_patterns=["*.bin", "*.gguf", "*.onnx", "*.msgpack", "*.h5"],
+            )
+
+        model_status["status"] = "loading_model"
+        tokenizer = AutoTokenizer.from_pretrained(MODEL_PATH)
+        model = AutoModelForCausalLM.from_pretrained(MODEL_PATH, torch_dtype=torch.bfloat16)
+        model.config.pad_token_id = tokenizer.pad_token_id
+        model.eval()
+
+        model_status["status"] = "ready"
+        model_status["ready"] = True
+    except Exception as exc:  # noqa: BLE001 - surface any failure via /api/health
+        model_status["status"] = "error"
+        model_status["error"] = str(exc)
+
+
+threading.Thread(target=_load_model, daemon=True).start()
 
 
 def _chat(messages, generation_config):

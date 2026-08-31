@@ -1,0 +1,21 @@
+{
+  "name": "forecasting",
+  "version": "1.0.0",
+  "description": "Sale forecasting APp",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {},
+  "devDependencies": {
+    "electron": "^28.0.0",
+    "electron-builder": "^25.1.8"
+  },
+  "allowScripts": {
+    "electron@28.3.3": true
+  }
+}
