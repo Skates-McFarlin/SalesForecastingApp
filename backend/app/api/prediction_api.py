@@ -76,7 +76,8 @@ def get_summary(prediction_id):
         if prediction is None:
             return jsonify({"error": "Prediction not found"}), 404
 
-        return jsonify({"Summary": get_or_generate_summary(prediction)}), 200
+        summary, unverified = get_or_generate_summary(prediction)
+        return jsonify({"Summary": summary, "Unverified": unverified}), 200
 
     except Exception as e:
         return jsonify({"error": str(e)}), 500

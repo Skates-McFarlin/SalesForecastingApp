@@ -11,7 +11,11 @@ class Prediction(db.Model):
     percent_change = db.Column(db.String(120), nullable=True)
     category = db.Column(db.String(120), nullable=True)
     seasonality = db.Column(db.String(60), nullable=True)
+    forecast_low = db.Column(db.String(120), nullable=True)
+    forecast_high = db.Column(db.String(120), nullable=True)
+    seasonality_note = db.Column(db.Text, nullable=True)
     summary = db.Column(db.Text, nullable=True)
+    summary_unverified = db.Column(db.Boolean, nullable=True)
     created_at = db.Column(db.DateTime, default=db.func.current_timestamp())
 
     def __repr__(self):

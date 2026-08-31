@@ -12,6 +12,7 @@ import requests
 from prophet import Prophet
 import pandas as pd
 import numpy as np
+from scipy.stats import norm
 from app.models.prediction import Prediction
 from app.models.file import File
 from app.extensions import db
@@ -227,53 +228,165 @@ def _trend_sentence(percent_change, forecast, last_year_sales):
     return f"Forecasted sales are FLAT versus last year ({forecast} units, unchanged)."
 
 
-def generate_summary(product, percent_change, forecast, last_year_sales, duration, tags, portfolio_context=None):
-    """Generate a natural language inventory-flow summary using Qwen2.5-1.5B-Instruct.
+_NUMBER_RE = re.compile(r"-?\d[\d,]*\.?\d*")
 
-    Frames the forecast as inventory movement: units forecasted to go OUT (sales)
-    versus the units that should come IN (restock) to cover that demand, grounded
-    in the product's inferred category/seasonality so the LLM can flag whether a
-    trend looks like normal seasonal movement or an actual demand shift. When
-    portfolio_context is given (this product's standing relative to the rest of
-    the uploaded dataset), the LLM can also say whether it's leading or lagging
-    its peers, not just its own history.
+# Dates are restated constantly ("2025-12-31", "December 31, 2025") and their
+# parts would otherwise read as sales figures. Strip them before counting.
+_DATE_RE = re.compile(
+    r"\d{4}-\d{2}-\d{2}"
+    r"|(?:January|February|March|April|May|June|July|August|September|October"
+    r"|November|December)\s+\d{1,2}(?:st|nd|rd|th)?,?\s*\d{0,4}",
+    re.IGNORECASE,
+)
+
+
+def _numbers_in(text):
+    values = set()
+    for raw in _NUMBER_RE.findall(_DATE_RE.sub(" ", text)):
+        try:
+            values.add(abs(float(raw.replace(",", ""))))
+        except ValueError:
+            continue
+    return values
+
+
+def _unsupported_numbers(text, prompt):
+    """Numbers the model wrote that aren't traceable to the prompt.
+
+    Anything the model states that isn't in - or trivially derived from - the
+    figures it was given is fabricated, however plausible it sounds. Pairwise
+    differences and sums are allowed because "18 more units than last year" is
+    a legitimate restatement, not an invention.
     """
-    portfolio_block = f"\n- Portfolio Context: {portfolio_context}" if portfolio_context else ""
+    given = sorted(_numbers_in(prompt))
+    supported = set(given)
+    # Snapshot first: deriving from the growing set instead cascades into
+    # sums of sums, which covers so much of the number line that nothing
+    # ever looks fabricated.
+    for i, a in enumerate(given):
+        for b in given[i:]:
+            supported.add(abs(a - b))
+            supported.add(a + b)
+    supported |= {round(v, 1) for v in list(supported)}
 
-    # State the direction in words rather than leaving the model to infer it
-    # from a signed number - a small model reads "7.21%" against a larger
-    # forecast and still writes "a decrease of 7.21%" a fair share of the time.
-    trend_block = f"\n- Year-over-year comparison: {_trend_sentence(percent_change, forecast, last_year_sales)}"
+    unsupported = []
+    for value in _numbers_in(text):
+        # Ignore small integers and years: these are calendar references
+        # ("3-4 sentences", "January 2025"), not factual claims about sales.
+        if value <= 12 or (1900 <= value <= 2100):
+            continue
+        # Tolerance covers rounding, e.g. "7.21" restated as "7.2".
+        if any(abs(value - s) <= max(0.15, s * 0.01) for s in supported):
+            continue
+        if any(abs(value - s) <= max(0.15, s * 0.01) for s in supported):
+            continue
+        unsupported.append(value)
+    return unsupported
 
-    prompt = f"""You are an expert inventory and sales forecasting analyst.
 
-Based on the data below, write a concise, professional summary (3-5 sentences) covering:
-1. Outbound inventory: how many units of this product are forecasted to leave inventory (be sold) over the period
-2. Inbound inventory: how many units should be restocked/received to cover that forecasted demand without stocking out
-3. How this period compares to the same period last year, and whether that looks like normal seasonal movement for this product's category or an actual demand shift
-4. If portfolio context is provided, how this product is performing relative to the rest of its category in this dataset
-5. Any actionable recommendation for purchasing or replenishment planning
+def _build_summary_prompt(
+    product, percent_change, forecast, last_year_sales, duration, tags,
+    portfolio_context=None, forecast_low=None, forecast_high=None, seasonality_note=None,
+):
+    """Assemble the summary prompt.
 
-Only state the direction of change given below. Do not describe an increase as a
-decrease, or a decrease as an increase.
-
-Data:
-- Product Name: {product}
-- Product Category: {tags['category']}
-- Seasonality: {tags['seasonality']}
-- Forecast Period: {duration}
-- Forecasted Units Out (Sales): {forecast}
-- Last Year Actual Units Out (Sales): {last_year_sales}{trend_block}{portfolio_block}
-
-Write the summary in a clear, professional tone suitable for a business inventory report.
-"""
-
-    messages = [
-        {"role": "system", "content": "You are a professional inventory and sales analyst. Provide concise, data-driven insights."},
-        {"role": "user", "content": prompt}
+    Every line here is a fact computed from the data. The prompt deliberately
+    does NOT ask for anything the data can't answer - notably a restock
+    quantity, which this app has no inventory figures for, and which the model
+    used to satisfy by echoing the forecast back as if it were advice.
+    """
+    # Direction in words rather than a signed number: a small model reads
+    # "7.21%" against a larger forecast and still writes "a decrease of 7.21%"
+    # a fair share of the time.
+    lines = [
+        f"- Product Name: {product}",
+        f"- Product Category: {tags['category']}",
+        f"- Forecast Period: {duration}",
+        f"- Forecasted Units Sold: {forecast}",
     ]
 
-    return _chat(messages, max_tokens=512, temperature=0.7, top_p=0.95)
+    if forecast_low is not None and forecast_high is not None:
+        lines.append(
+            f"- Forecast Uncertainty Range: between {forecast_low} and {forecast_high} units "
+            f"(the model's own confidence interval - the single figure above is the midpoint)"
+        )
+
+    lines.append(f"- Last Year Actual Units Sold: {last_year_sales}")
+    lines.append(
+        f"- Year-over-year comparison: "
+        f"{_trend_sentence(percent_change, forecast, last_year_sales)}"
+    )
+
+    # Seasonality measured from this product's own sales history, not guessed
+    # from its name. The name-derived tag is a label for grouping, not evidence.
+    if seasonality_note:
+        lines.append(f"- Observed seasonality (from this product's sales history): {seasonality_note}")
+
+    if portfolio_context:
+        lines.append(f"- Category comparison: {portfolio_context}")
+        peer_rule = (
+            "Comment on how this product compares with others in its category, "
+            "using only the category comparison line above."
+        )
+    else:
+        peer_rule = (
+            "No category comparison is available for this product. Do not comment on "
+            "how it compares with other products, and do not claim it is performing "
+            "above or below average."
+        )
+
+    data_block = "\n".join(lines)
+
+    return f"""You are an expert inventory and sales forecasting analyst.
+
+Using only the data below, write a concise summary of 3-4 sentences covering:
+1. How many units are forecasted to sell over the period, and how confident that figure is
+2. How this compares with the same period last year
+3. Whether the observed seasonality explains that change, or whether it looks like a real shift in demand
+4. One practical implication for purchasing or replenishment planning
+
+Rules:
+- Use only the figures given below. Do not introduce any other numbers.
+- State the direction of change exactly as given. Never describe an increase as a decrease, or a decrease as an increase.
+- {peer_rule}
+- Do not recommend a specific restock quantity: no inventory or stock-on-hand data is available here.
+
+Data:
+{data_block}
+
+Write in a clear, professional tone suitable for a business inventory report."""
+
+
+def generate_summary(
+    product, percent_change, forecast, last_year_sales, duration, tags,
+    portfolio_context=None, forecast_low=None, forecast_high=None, seasonality_note=None,
+):
+    """Write a grounded narrative for one product's forecast.
+
+    Returns (summary_text, unsupported_numbers). Sampling is near-greedy: this
+    is factual summarisation of supplied figures, and the creative-writing
+    defaults this inherited (temperature 0.7, a 512-token budget for "3-5
+    sentences") gave the model both licence and room to invent.
+    """
+    prompt = _build_summary_prompt(
+        product, percent_change, forecast, last_year_sales, duration, tags,
+        portfolio_context, forecast_low, forecast_high, seasonality_note,
+    )
+    messages = [
+        {"role": "system", "content": "You are a professional inventory and sales analyst. Provide concise, data-driven insights."},
+        {"role": "user", "content": prompt},
+    ]
+
+    best = None
+    for _ in range(2):  # one retry when the model reaches for numbers it wasn't given
+        text = _chat(messages, max_tokens=220, temperature=0.2, top_p=0.9)
+        unsupported = _unsupported_numbers(text, prompt)
+        if not unsupported:
+            return text, []
+        if best is None or len(unsupported) < len(best[1]):
+            best = (text, unsupported)
+
+    return best
 
 
 def predict_sales_forecasting(data, start_date, duration):
@@ -328,6 +441,7 @@ def predict_sales_forecasting(data, start_date, duration):
         forecast = m.predict(future)
 
         sum_forecast_now = forecast["yhat"].sum()
+        forecast_low, forecast_high = _aggregate_interval(m, forecast, sum_forecast_now)
 
         selected_months = (
             df_product["ds"]
@@ -365,6 +479,9 @@ def predict_sales_forecasting(data, start_date, duration):
             ),
             category=product_tags["category"],
             seasonality=product_tags["seasonality"],
+            forecast_low=str(round(forecast_low)),
+            forecast_high=str(round(forecast_high)),
+            seasonality_note=_seasonality_note(df_product),
         )
         db.session.add(prediction)
         db.session.commit()
@@ -386,6 +503,65 @@ def predict_sales_forecasting(data, start_date, duration):
         )
 
     return json.dumps(forecast_results, indent=4)
+
+
+def _aggregate_interval(model, forecast, total):
+    """Confidence interval for the summed forecast, not the sum of intervals.
+
+    Adding up each month's yhat_lower and yhat_upper describes the case where
+    every single month lands at its extreme together, which produced absurd
+    ranges in practice (9 to 517 units around a 261 forecast). Combining the
+    monthly spreads in quadrature instead treats the month-to-month errors as
+    largely independent, which understates correlated trend error but is far
+    closer to the truth than the naive sum.
+    """
+    try:
+        z = norm.ppf(0.5 + model.interval_width / 2)
+        sigmas = (forecast["yhat_upper"] - forecast["yhat_lower"]) / (2 * z)
+        spread = z * float(np.sqrt((sigmas**2).sum()))
+    except Exception:  # noqa: BLE001 - fall back to the raw bounds
+        return forecast["yhat_lower"].sum(), forecast["yhat_upper"].sum()
+
+    return max(0.0, total - spread), total + spread
+
+
+MONTH_NAMES = [
+    "January", "February", "March", "April", "May", "June",
+    "July", "August", "September", "October", "November", "December",
+]
+
+
+def _seasonality_note(df_product):
+    """Describe this product's seasonality from its actual sales history.
+
+    The category/seasonality tag elsewhere is inferred from the product *name*,
+    so asking the model to judge "seasonal swing or real demand shift" against
+    that tag is circular - it would be checking its own earlier guess. This
+    measures the swing from the real monthly numbers instead.
+    """
+    if df_product.empty:
+        return None
+
+    monthly = df_product.groupby(df_product["ds"].dt.month)["y"].mean()
+    if len(monthly) < 6 or monthly.max() <= 0:
+        return None
+
+    peak_month = MONTH_NAMES[int(monthly.idxmax()) - 1]
+    trough_month = MONTH_NAMES[int(monthly.idxmin()) - 1]
+    peak, trough, avg = monthly.max(), monthly.min(), monthly.mean()
+
+    swing = (peak - trough) / avg if avg else 0
+    if swing < 0.5:
+        strength = "steady through the year, with little seasonal variation"
+    elif swing < 1.5:
+        strength = "moderately seasonal"
+    else:
+        strength = "strongly seasonal"
+
+    return (
+        f"{strength}; historically peaks in {peak_month} (~{peak:.0f} units/month) "
+        f"and bottoms out in {trough_month} (~{trough:.0f} units/month)"
+    )
 
 
 def _portfolio_context(prediction):
@@ -417,16 +593,21 @@ def _portfolio_context(prediction):
 
 
 def get_or_generate_summary(prediction):
-    """Return prediction.summary, generating and caching it on first request."""
+    """Return (summary, unverified) for a prediction, caching on first request.
+
+    `unverified` is True when the generated text contains figures that can't be
+    traced back to the data it was given - the caller can flag it rather than
+    presenting a possibly-invented number as fact.
+    """
     if prediction.summary:
-        return prediction.summary
+        return prediction.summary, bool(prediction.summary_unverified)
 
     tags = {
         "category": prediction.category or "unknown",
         "seasonality": prediction.seasonality or "unknown",
     }
 
-    summary = generate_summary(
+    summary, unsupported = generate_summary(
         prediction.product_name,
         prediction.percent_change,
         prediction.forecast,
@@ -434,11 +615,15 @@ def get_or_generate_summary(prediction):
         prediction.duration,
         tags,
         _portfolio_context(prediction),
+        prediction.forecast_low,
+        prediction.forecast_high,
+        prediction.seasonality_note,
     )
 
     prediction.summary = summary
+    prediction.summary_unverified = bool(unsupported)
     db.session.commit()
-    return summary
+    return summary, bool(unsupported)
 
 
 def _read_rows(data):
