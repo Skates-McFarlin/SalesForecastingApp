@@ -460,15 +460,21 @@ def predict_sales_forecasting(data, start_date, duration):
         )
 
         actual_sales_values = df_product.loc[selected_months, "y"].tolist()
-        actual_last_year_sales = (
-            sum(actual_sales_values) if len(actual_sales_values) > 0 else 0
-        )
+        # Require the full comparison window, not just some overlap. A
+        # 24-month forecast whose "last year" window only has 12 real months
+        # (the other 12 fall past the file's history) used to silently sum
+        # just those 12 and present it as if it were a matching period -
+        # comparing a 24-month forecast against half a lookback window,
+        # which inflated every "% change" by roughly 2x. Partial coverage is
+        # treated the same as no coverage: N/A, not a misleading number.
+        has_full_comparison = len(actual_sales_values) == forecast_periods
+        actual_last_year_sales = sum(actual_sales_values) if has_full_comparison else 0
 
         # Calculate percentage change correctly
         percent_change = (
             ((sum_forecast_now - actual_last_year_sales) / abs(actual_last_year_sales))
             * 100
-            if actual_last_year_sales != 0
+            if has_full_comparison and actual_last_year_sales != 0
             else "N/A"
         )
         

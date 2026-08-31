@@ -2,9 +2,14 @@ import { useEffect, useMemo, useState } from "react";
 import { fetchSummary } from "../api";
 import { Badge, DeltaBadge, formatNumber, Input, SectionLabel, Select, Spinner } from "./ui";
 
-const COLUMNS = [
+const BASE_COLUMNS = [
   { key: "ProductName", label: "Product", align: "left" },
+  { key: "HistoryMonths", label: "History", align: "right" },
   { key: "Forecast", label: "Forecast", align: "right" },
+  { key: "__share", label: "Share", align: "right" },
+];
+
+const COMPARISON_COLUMNS = [
   { key: "Last Year Actual Sales", label: "Last year", align: "right" },
   { key: "% Change from Previous Year", label: "Change", align: "right" },
 ];
@@ -36,6 +41,11 @@ export default function ResultsTable({ rows }) {
   );
 
   const hasComparison = rows.some((r) => r["% Change from Previous Year"] !== "N/A");
+  // Last Year/Change are only worth their own columns when at least one row
+  // has something to show - with zero comparable rows they'd just repeat
+  // "0"/"-" down the whole table, which the banner below already explains.
+  const columns = hasComparison ? [...BASE_COLUMNS, ...COMPARISON_COLUMNS] : BASE_COLUMNS;
+
   const totalForecast = useMemo(() => rows.reduce((sum, r) => sum + Number(r.Forecast || 0), 0), [rows]);
 
   // The biggest movers land first by default - that's what "biggest mover"
@@ -63,10 +73,15 @@ export default function ResultsTable({ rows }) {
         (category === "all" || r.Category === category)
     );
     const { key, dir } = effectiveSort;
-    const valueOf = (row) =>
-      key === "__abs_change"
-        ? row["% Change from Previous Year"] === "N/A" ? NaN : changeMagnitude(row["% Change from Previous Year"])
-        : row[key];
+    const valueOf = (row) => {
+      if (key === "__abs_change") {
+        return row["% Change from Previous Year"] === "N/A" ? NaN : changeMagnitude(row["% Change from Previous Year"]);
+      }
+      if (key === "__share") {
+        return totalForecast > 0 ? Number(row.Forecast || 0) / totalForecast : 0;
+      }
+      return row[key];
+    };
     return [...filtered].sort((a, b) => {
       const av = valueOf(a);
       const bv = valueOf(b);
@@ -78,7 +93,7 @@ export default function ResultsTable({ rows }) {
       else cmp = Number.isNaN(an) ? 1 : -1; // push N/A to the bottom either way
       return dir === "asc" ? cmp : -cmp;
     });
-  }, [rows, query, category, effectiveSort]);
+  }, [rows, query, category, effectiveSort, totalForecast]);
 
   const toggle = async (row) => {
     const id = row.PredictionId;
@@ -155,7 +170,7 @@ export default function ResultsTable({ rows }) {
           <thead className="sticky top-0 z-10 bg-[var(--surface-2)]">
             <tr className="border-b border-[var(--line)]">
               <th className="w-8" />
-              {COLUMNS.map((col) => (
+              {columns.map((col) => (
                 <th
                   key={col.key}
                   className={`px-3 py-2.5 font-medium ${
@@ -180,6 +195,8 @@ export default function ResultsTable({ rows }) {
               <RowGroup
                 key={row.PredictionId}
                 row={row}
+                columnCount={columns.length}
+                showComparison={hasComparison}
                 share={totalForecast > 0 ? (Number(row.Forecast || 0) / totalForecast) * 100 : 0}
                 isMover={moverIds.has(row.PredictionId)}
                 isOpen={expanded === row.PredictionId}
@@ -201,7 +218,7 @@ export default function ResultsTable({ rows }) {
 }
 
 /* Rendered as sibling <tr>s so an expanded summary spans the full width. */
-function RowGroup({ row, share, isMover, isOpen, summary, onToggle }) {
+function RowGroup({ row, columnCount, showComparison, share, isMover, isOpen, summary, onToggle }) {
   const changeValue = row["% Change from Previous Year"];
   const unitDelta =
     changeValue !== "N/A" ? Number(row.Forecast) - Number(row["Last Year Actual Sales"]) : null;
@@ -227,37 +244,36 @@ function RowGroup({ row, share, isMover, isOpen, summary, onToggle }) {
           <div className="font-medium">{row.ProductName}</div>
           <div className="mt-1 flex flex-wrap gap-1">
             <Badge>{row.Category}</Badge>
-            <Badge>{row.Seasonality}</Badge>
-            {row.HistoryMonths != null && <CoverageBadge months={row.HistoryMonths} />}
             {row.HasDataGap && <GapBadge />}
             {isMover && <MoverBadge />}
           </div>
         </td>
-        <td className="relative px-3 py-2.5 text-right">
-          <div
-            className="pointer-events-none absolute inset-y-1.5 right-0 rounded-l bg-accent-500/10"
-            style={{ width: `${Math.min(100, share)}%` }}
-            aria-hidden="true"
-          />
-          <span className="tnum relative font-medium">{formatNumber(row.Forecast)}</span>
-        </td>
-        <td className="tnum px-3 py-2.5 text-right text-[var(--ink-2)]">
-          {formatNumber(row["Last Year Actual Sales"])}
-        </td>
         <td className="px-3 py-2.5 text-right">
-          <DeltaBadge value={changeValue} />
-          {unitDelta !== null && (
-            <div className="tnum mt-0.5 text-[11px] text-[var(--ink-3)]">
-              {unitDelta > 0 ? "+" : ""}
-              {formatNumber(unitDelta)} units
-            </div>
-          )}
+          <HistoryValue months={row.HistoryMonths} />
         </td>
+        <td className="tnum px-3 py-2.5 text-right font-medium">{formatNumber(row.Forecast)}</td>
+        <td className="tnum px-3 py-2.5 text-right text-[var(--ink-2)]">{share.toFixed(1)}%</td>
+        {showComparison && (
+          <>
+            <td className="tnum px-3 py-2.5 text-right text-[var(--ink-2)]">
+              {formatNumber(row["Last Year Actual Sales"])}
+            </td>
+            <td className="px-3 py-2.5 text-right">
+              <DeltaBadge value={changeValue} />
+              {unitDelta !== null && (
+                <div className="tnum mt-0.5 text-[11px] text-[var(--ink-3)]">
+                  {unitDelta > 0 ? "+" : ""}
+                  {formatNumber(unitDelta)} units
+                </div>
+              )}
+            </td>
+          </>
+        )}
       </tr>
       {isOpen && (
         <tr className="border-b border-[var(--line)] bg-accent-500/4">
           <td />
-          <td colSpan={4} className="px-3 pt-1 pb-4">
+          <td colSpan={columnCount} className="px-3 pt-1 pb-4">
             <SectionLabel className="mb-2">AI analysis</SectionLabel>
             {summary?.loading && (
               <div className="flex items-center gap-2 text-sm text-[var(--ink-2)]">
@@ -280,19 +296,17 @@ function RowGroup({ row, share, isMover, isOpen, summary, onToggle }) {
   );
 }
 
-function CoverageBadge({ months }) {
+function HistoryValue({ months }) {
+  if (months == null) return <span className="text-[var(--ink-3)]">—</span>;
   const thin = months < THIN_HISTORY_MONTHS;
-  const title = thin
-    ? `Only ${months} month${months === 1 ? "" : "s"} of sales history — forecast may be less reliable`
-    : `${months} months of sales history`;
   return (
     <span
-      title={title}
-      className={`inline-flex items-center rounded-md border px-1.5 py-0.5 text-[11px] font-medium ${
+      title={
         thin
-          ? "border-amber-500/40 bg-amber-500/10 text-amber-600 dark:text-amber-400"
-          : "border-[var(--line)] bg-[var(--surface-2)] text-[var(--ink-2)]"
-      }`}
+          ? `Only ${months} month${months === 1 ? "" : "s"} of sales history — forecast may be less reliable`
+          : `${months} months of sales history`
+      }
+      className={`tnum text-sm ${thin ? "font-medium text-amber-600 dark:text-amber-400" : "text-[var(--ink-2)]"}`}
     >
       {months} mo
     </span>
