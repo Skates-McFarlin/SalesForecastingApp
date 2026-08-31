@@ -2,11 +2,11 @@ const { app, BrowserWindow } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const http = require('http');
-const { spawn } = require('child_process');
+const { spawn, execFileSync } = require('child_process');
 
 const BACKEND_HOST = '127.0.0.1';
 const BACKEND_PORT = 5000;
-// Generous timeout: first run downloads the ~2.9GB Qwen model before the
+// Generous timeout: first run downloads the ~1.1GB GGUF model before the
 // backend reports ready. Subsequent launches are fast (model already local).
 const BACKEND_READY_TIMEOUT_MS = 30 * 60 * 1000;
 const BACKEND_POLL_INTERVAL_MS = 1000;
@@ -150,7 +150,18 @@ app.whenReady().then(async () => {
 
 function stopBackend() {
     if (backendProcess && !backendProcess.killed) {
-        backendProcess.kill();
+        // The backend spawns its own child (llama-server.exe). A plain
+        // .kill() only terminates backend.exe itself - Windows does not
+        // propagate that to children, and a forceful kill also skips the
+        // backend's own atexit cleanup - so llama-server.exe is orphaned
+        // left running otherwise (confirmed while testing this). Killing
+        // the whole process tree via taskkill avoids that.
+        try {
+            execFileSync('taskkill', ['/pid', String(backendProcess.pid), '/T', '/F']);
+        } catch (err) {
+            // Process may have already exited; fall back to a plain kill.
+            backendProcess.kill();
+        }
         backendProcess = null;
     }
 }

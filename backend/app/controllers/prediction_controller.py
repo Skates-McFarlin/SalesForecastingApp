@@ -4,74 +4,135 @@ from datetime import datetime
 import re
 import threading
 import time
+import subprocess
+import atexit
+import sys
+from concurrent.futures import ThreadPoolExecutor
+import requests
 from prophet import Prophet
 import pandas as pd
 import numpy as np
-import torch
 from app.models.prediction import Prediction
 from app.models.file import File
 from app.extensions import db
-from transformers import AutoModelForCausalLM, AutoTokenizer, GenerationConfig
-from huggingface_hub import snapshot_download
+from huggingface_hub import hf_hub_download
 import os
 
-QWEN_REPO_ID = "Qwen/Qwen2.5-1.5B-Instruct"
+GGUF_REPO_ID = "Qwen/Qwen2.5-1.5B-Instruct-GGUF"
+GGUF_FILENAME = "qwen2.5-1.5b-instruct-q4_k_m.gguf"
+
+LLAMA_SERVER_HOST = "127.0.0.1"
+LLAMA_SERVER_PORT = 8081
+LLAMA_SERVER_BASE_URL = f"http://{LLAMA_SERVER_HOST}:{LLAMA_SERVER_PORT}"
 
 # Persistent, always-writable location (survives reinstalls, works regardless
 # of install-dir permissions) - same pattern as the SQLite DB path.
 _appdata = os.getenv("LOCALAPPDATA")
-MODEL_PATH = (
-    os.path.join(_appdata, "Insighta", "models", "qwen2_5")
+MODEL_DIR = (
+    os.path.join(_appdata, "Insighta", "models", "qwen2_5_gguf")
     if _appdata
-    else os.path.join(os.path.dirname(__file__), "..", "models", "qwen2_5")
+    else os.path.join(os.path.dirname(__file__), "..", "models", "qwen2_5_gguf")
 )
+MODEL_FILE = os.path.join(MODEL_DIR, GGUF_FILENAME)
 
-tokenizer = None
-model = None
+llama_process = None
 model_status = {"status": "starting", "ready": False, "error": None}
 
 
-def _model_already_present():
-    """Check whether a complete model already sits at MODEL_PATH.
+def _llama_server_exe():
+    """Resolve llama-server.exe, bundled alongside this backend (not
+    downloaded - it's a small, versioned build dependency, unlike the
+    model). Same frozen-vs-dev path resolution pattern as run.exe/backend
+    resolution elsewhere in this app."""
+    if getattr(sys, "frozen", False):
+        base = os.path.dirname(sys.executable)
+    else:
+        base = os.path.join(os.path.dirname(__file__), "..", "..")
+    return os.path.join(base, "llamacpp", "llama-server.exe")
 
-    Checks both a config file and the weights (not just one file) and
-    retries briefly: a freshly-installed, unsigned exe's first filesystem
-    access can be transiently delayed (e.g. antivirus scanning), which can
-    make a single os.path.exists() check falsely report "missing" and
-    trigger an unnecessary multi-minute Hub verification pass.
+
+def _model_already_present():
+    """Check whether the GGUF model already sits at MODEL_FILE.
+
+    A freshly-installed, unsigned exe's first filesystem access can be
+    delayed for tens of seconds (antivirus scanning the new binary),
+    making a naive isfile() check falsely report "missing" and trigger a
+    pointless ~1.1GB re-download. Observed in practice: first launch after
+    install re-downloaded, while relaunching the same (now-scanned) binary
+    found the file instantly.
+
+    So: only wait when a previous download plausibly happened (the model
+    directory already exists). On a genuine first run the directory is
+    absent and we skip straight to downloading with no added delay.
     """
-    config_path = os.path.join(MODEL_PATH, "config.json")
-    weights_path = os.path.join(MODEL_PATH, "model.safetensors")
-    for _ in range(5):
-        if os.path.isfile(config_path) and os.path.isfile(weights_path):
-            return True
+    if os.path.isfile(MODEL_FILE):
+        return True
+    if not os.path.isdir(MODEL_DIR):
+        return False
+
+    for _ in range(60):
         time.sleep(1)
+        if os.path.isfile(MODEL_FILE):
+            return True
     return False
 
 
-def _load_model():
-    """Download (first run only) and load the Qwen model in the background.
+def _stop_llama_server():
+    global llama_process
+    if llama_process and llama_process.poll() is None:
+        llama_process.terminate()
+        try:
+            llama_process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            llama_process.kill()
+    llama_process = None
 
-    Runs off the main thread so Flask can start serving immediately and
-    report real progress via /api/health instead of blocking startup.
+
+atexit.register(_stop_llama_server)
+
+
+def _load_model():
+    """Download (first run only) the GGUF model and start llama-server in
+    the background, so Flask can start serving immediately and report real
+    progress via /api/health instead of blocking startup.
     """
-    global tokenizer, model
+    global llama_process
     try:
         if not _model_already_present():
             model_status["status"] = "downloading_model"
-            os.makedirs(MODEL_PATH, exist_ok=True)
-            snapshot_download(
-                repo_id=QWEN_REPO_ID,
-                local_dir=MODEL_PATH,
-                ignore_patterns=["*.bin", "*.gguf", "*.onnx", "*.msgpack", "*.h5"],
+            os.makedirs(MODEL_DIR, exist_ok=True)
+            hf_hub_download(
+                repo_id=GGUF_REPO_ID,
+                filename=GGUF_FILENAME,
+                local_dir=MODEL_DIR,
             )
 
         model_status["status"] = "loading_model"
-        tokenizer = AutoTokenizer.from_pretrained(MODEL_PATH)
-        tokenizer.padding_side = "left"  # required for correct batched generation
-        model = AutoModelForCausalLM.from_pretrained(MODEL_PATH, torch_dtype=torch.bfloat16)
-        model.config.pad_token_id = tokenizer.pad_token_id
-        model.eval()
+        server_exe = _llama_server_exe()
+        creationflags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+        llama_process = subprocess.Popen(
+            [
+                server_exe,
+                "--model", MODEL_FILE,
+                "--host", LLAMA_SERVER_HOST,
+                "--port", str(LLAMA_SERVER_PORT),
+                "--parallel", "8",
+            ],
+            cwd=os.path.dirname(server_exe),
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            creationflags=creationflags,
+        )
+
+        for _ in range(120):
+            try:
+                if requests.get(f"{LLAMA_SERVER_BASE_URL}/health", timeout=2).status_code == 200:
+                    break
+            except requests.RequestException:
+                pass
+            time.sleep(1)
+        else:
+            raise RuntimeError("llama-server did not become ready in time")
 
         model_status["status"] = "ready"
         model_status["ready"] = True
@@ -83,20 +144,20 @@ def _load_model():
 threading.Thread(target=_load_model, daemon=True).start()
 
 
-def _chat(messages, generation_config):
-    """Run one chat-formatted generation through the local Qwen model."""
-    text = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-    inputs = tokenizer(text, return_tensors="pt")
+def _chat(messages, max_tokens, temperature=0.0, top_p=1.0):
+    """Run one chat-formatted generation through llama-server.
 
-    with torch.no_grad():
-        output_ids = model.generate(
-            **inputs,
-            generation_config=generation_config,
-            pad_token_id=tokenizer.pad_token_id
-        )
-
-    generated_ids = output_ids[0][inputs.input_ids.shape[1]:]
-    return tokenizer.decode(generated_ids, skip_special_tokens=True).strip()
+    llama-server applies the GGUF's embedded Qwen chat template itself -
+    no manual tokenization/padding needed here, unlike the old
+    transformers-based path.
+    """
+    resp = requests.post(
+        f"{LLAMA_SERVER_BASE_URL}/v1/chat/completions",
+        json={"messages": messages, "max_tokens": max_tokens, "temperature": temperature, "top_p": top_p},
+        timeout=120,
+    )
+    resp.raise_for_status()
+    return resp.json()["choices"][0]["message"]["content"].strip()
 
 
 def _classification_messages(product_name):
@@ -125,41 +186,22 @@ def _extract_tags(raw):
     }
 
 
-def classify_products_batch(product_names, batch_size=16):
-    """Zero-shot classify many products' seasonality/category in batched LLM calls.
+def classify_products_batch(product_names, max_workers=8):
+    """Zero-shot classify many products' seasonality/category concurrently.
 
-    Batching (one model.generate() call per chunk, rather than per product)
-    is a real throughput win, not just deferred cost - empirically ~3.3s/item
-    at batch size 16 vs ~5.3s/item sequential. This is a stand-in for real
-    product context until an actual data source (a category taxonomy,
+    llama-server's --parallel slots do real server-side continuous batching;
+    the client just needs to fire concurrent requests to use it - a real
+    throughput win, not just deferred cost (empirically ~0.3s/item at 8
+    concurrent workers vs ~5.3s/item sequential). This is a stand-in for
+    real product context until an actual data source (a category taxonomy,
     tariff schedule, etc.) is wired in via RAG later.
     """
-    results = {}
-    generation_config = GenerationConfig(max_new_tokens=64, do_sample=False)
+    def classify_one(name):
+        raw = _chat(_classification_messages(name), max_tokens=64, temperature=0.0)
+        return name, _extract_tags(raw)
 
-    for i in range(0, len(product_names), batch_size):
-        chunk = product_names[i:i + batch_size]
-        texts = [
-            tokenizer.apply_chat_template(
-                _classification_messages(name), tokenize=False, add_generation_prompt=True
-            )
-            for name in chunk
-        ]
-        inputs = tokenizer(texts, return_tensors="pt", padding=True)
-
-        with torch.no_grad():
-            output_ids = model.generate(
-                **inputs,
-                generation_config=generation_config,
-                pad_token_id=tokenizer.pad_token_id,
-            )
-
-        input_len = inputs["input_ids"].shape[1]
-        for name, ids in zip(chunk, output_ids):
-            raw = tokenizer.decode(ids[input_len:], skip_special_tokens=True).strip()
-            results[name] = _extract_tags(raw)
-
-    return results
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        return dict(executor.map(classify_one, product_names))
 
 
 def generate_summary(product, percent_change, forecast, last_year_sales, duration, tags, portfolio_context=None):
@@ -201,15 +243,7 @@ Write the summary in a clear, professional tone suitable for a business inventor
         {"role": "user", "content": prompt}
     ]
 
-    generation_config = GenerationConfig(
-        max_new_tokens=512,
-        temperature=0.7,
-        top_p=0.95,
-        do_sample=True,
-        repetition_penalty=1.1
-    )
-
-    return _chat(messages, generation_config)
+    return _chat(messages, max_tokens=512, temperature=0.7, top_p=0.95)
 
 
 def predict_sales_forecasting(data, start_date, duration):

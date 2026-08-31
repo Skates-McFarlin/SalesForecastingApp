@@ -42,7 +42,6 @@ pytz==2025.1
 PyYAML==6.0.2
 regex==2024.11.6
 requests==2.32.3
-safetensors==0.5.2
 scikit-learn==1.6.1
 scipy==1.15.1
 setuptools==75.8.0
@@ -52,10 +51,7 @@ stanio==0.5.1
 statsmodels==0.14.4
 sympy==1.13.1
 threadpoolctl==3.5.0
-tokenizers==0.21.0
-torch==2.6.0
 tqdm==4.67.1
-transformers==4.48.3
 typing_extensions==4.12.2
 tzdata==2025.1
 urllib3==2.3.0

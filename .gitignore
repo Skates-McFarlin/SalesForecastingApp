@@ -1,7 +1,7 @@
 .aider*
 __pycache__/
 *.pyc
-backend/app/models/qwen2_5/
+backend/llamacpp/
 backend/instance/
 backend/build/
 backend/dist/
