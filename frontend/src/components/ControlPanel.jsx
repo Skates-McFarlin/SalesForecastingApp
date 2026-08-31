@@ -8,8 +8,10 @@ const MONTHS = [
 
 const DURATIONS = [3, 6, 12, 18, 24];
 
+// Forecasts run forward from now, so the picker starts at the current year
+// rather than including years already behind us.
 const CURRENT_YEAR = new Date().getFullYear();
-const YEARS = Array.from({ length: 11 }, (_, i) => CURRENT_YEAR - 5 + i);
+const YEARS = Array.from({ length: 10 }, (_, i) => CURRENT_YEAR + i);
 
 export default function ControlPanel({
   file,

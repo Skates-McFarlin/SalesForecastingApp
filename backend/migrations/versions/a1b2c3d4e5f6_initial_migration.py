@@ -40,6 +40,8 @@ def upgrade():
         sa.Column('seasonality_note', sa.Text(), nullable=True),
         sa.Column('summary', sa.Text(), nullable=True),
         sa.Column('summary_unverified', sa.Boolean(), nullable=True),
+        sa.Column('history_months', sa.Integer(), nullable=True),
+        sa.Column('has_data_gap', sa.Boolean(), nullable=True),
         sa.Column('created_at', sa.DateTime(), nullable=True),
         sa.ForeignKeyConstraint(['file_id'], ['file.id']),
         sa.PrimaryKeyConstraint('id'),

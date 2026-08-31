@@ -16,6 +16,8 @@ class Prediction(db.Model):
     seasonality_note = db.Column(db.Text, nullable=True)
     summary = db.Column(db.Text, nullable=True)
     summary_unverified = db.Column(db.Boolean, nullable=True)
+    history_months = db.Column(db.Integer, nullable=True)
+    has_data_gap = db.Column(db.Boolean, nullable=True)
     created_at = db.Column(db.DateTime, default=db.func.current_timestamp())
 
     def __repr__(self):

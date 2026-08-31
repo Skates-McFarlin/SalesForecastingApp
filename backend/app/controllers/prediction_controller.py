@@ -439,6 +439,12 @@ def predict_sales_forecasting(data, start_date, duration):
 
         # Make Predictions for the Future
         forecast = m.predict(future)
+        # Prophet's trend is linear and unaware that unit sales can't go
+        # negative - a steeply declining product extrapolated far enough
+        # forward can predict negative monthly sales. Clamp per month, not
+        # just the sum, since a single bad month could otherwise cancel out
+        # against good ones.
+        forecast["yhat"] = forecast["yhat"].clip(lower=0)
 
         sum_forecast_now = forecast["yhat"].sum()
         forecast_low, forecast_high = _aggregate_interval(m, forecast, sum_forecast_now)
@@ -467,6 +473,8 @@ def predict_sales_forecasting(data, start_date, duration):
         )
         
         product_tags = tags_by_product.get(product, {"seasonality": "unknown", "category": "unknown"})
+        history_months = len(df_product)
+        has_data_gap = _has_data_gap(df_product)
 
         prediction = Prediction(
             file_id=file_record.id,
@@ -482,6 +490,8 @@ def predict_sales_forecasting(data, start_date, duration):
             forecast_low=str(round(forecast_low)),
             forecast_high=str(round(forecast_high)),
             seasonality_note=_seasonality_note(df_product),
+            history_months=history_months,
+            has_data_gap=has_data_gap,
         )
         db.session.add(prediction)
         db.session.commit()
@@ -499,10 +509,35 @@ def predict_sales_forecasting(data, start_date, duration):
                 ),
                 "Category": product_tags["category"],
                 "Seasonality": product_tags["seasonality"],
+                "HistoryMonths": history_months,
+                "HasDataGap": has_data_gap,
             }
         )
 
     return json.dumps(forecast_results, indent=4)
+
+
+def _has_data_gap(df_product):
+    """Flag an interior run of 2+ zero-sales months in a product's history.
+
+    Leading/trailing zeros (before launch, after discontinuation) are normal
+    and not flagged - only zeros sandwiched between real activity, which
+    usually mean a stockout rather than genuine zero demand. Prophet can't
+    tell the difference, so this is surfaced for the user to judge instead.
+    """
+    values = df_product.sort_values("ds")["y"].tolist()
+
+    first_nonzero = next((i for i, v in enumerate(values) if v > 0), None)
+    last_nonzero = next((i for i in range(len(values) - 1, -1, -1) if values[i] > 0), None)
+    if first_nonzero is None or last_nonzero is None or first_nonzero >= last_nonzero:
+        return False
+
+    run = 0
+    for v in values[first_nonzero : last_nonzero + 1]:
+        run = run + 1 if v == 0 else 0
+        if run >= 2:
+            return True
+    return False
 
 
 def _aggregate_interval(model, forecast, total):
