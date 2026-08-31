@@ -5,17 +5,118 @@ import re
 from prophet import Prophet
 import pandas as pd
 import numpy as np
+import torch
 from app.models.prediction import Prediction
 from app.models.file import File
 from app.extensions import db
-from transformers import GPT2LMHeadModel, GPT2Tokenizer
+from transformers import AutoModelForCausalLM, AutoTokenizer, GenerationConfig
 import os
 
-MODEL_PATH = os.path.join(os.path.dirname(__file__), "..", "models", "gpt2")
-tokenizer = GPT2Tokenizer.from_pretrained(MODEL_PATH)
-model = GPT2LMHeadModel.from_pretrained(MODEL_PATH)
-model.config.pad_token_id = model.config.eos_token_id
-status = True
+# Model path: Qwen2.5-1.5B-Instruct (instruction-tuned)
+MODEL_PATH = os.path.join(os.path.dirname(__file__), "..", "models", "qwen2_5")
+tokenizer = AutoTokenizer.from_pretrained(MODEL_PATH)
+model = AutoModelForCausalLM.from_pretrained(MODEL_PATH, torch_dtype=torch.bfloat16)
+model.config.pad_token_id = tokenizer.pad_token_id
+model.eval()
+
+ENABLE_AI_SUMMARY = True
+
+
+def _chat(messages, generation_config):
+    """Run one chat-formatted generation through the local Qwen model."""
+    text = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+    inputs = tokenizer(text, return_tensors="pt")
+
+    with torch.no_grad():
+        output_ids = model.generate(
+            **inputs,
+            generation_config=generation_config,
+            pad_token_id=tokenizer.pad_token_id
+        )
+
+    generated_ids = output_ids[0][inputs.input_ids.shape[1]:]
+    return tokenizer.decode(generated_ids, skip_special_tokens=True).strip()
+
+
+def classify_product(product_name):
+    """Zero-shot classify a product's seasonality and category from its name alone.
+
+    This is a stand-in for real product context until an actual data source
+    (a category taxonomy, tariff schedule, etc.) is wired in via RAG later.
+    """
+    prompt = f"""Classify this product for a sales forecasting report.
+
+Product Name: {product_name}
+
+Respond with ONLY a JSON object in this exact format, no other text:
+{{"seasonality": "<winter|spring|summer|fall|holiday|year-round|unknown>", "category": "<short 2-4 word category description>"}}
+"""
+    messages = [
+        {"role": "system", "content": "You are a product classification assistant. Respond only with valid JSON, no explanation."},
+        {"role": "user", "content": prompt}
+    ]
+
+    generation_config = GenerationConfig(
+        max_new_tokens=64,
+        do_sample=False,
+    )
+
+    raw = _chat(messages, generation_config)
+
+    match = re.search(r"\{.*\}", raw, re.DOTALL)
+    try:
+        tags = json.loads(match.group(0)) if match else {}
+    except json.JSONDecodeError:
+        tags = {}
+
+    return {
+        "seasonality": tags.get("seasonality", "unknown"),
+        "category": tags.get("category", "unknown"),
+    }
+
+
+def generate_summary(product, percent_change, forecast, last_year_sales, duration, tags):
+    """Generate a natural language inventory-flow summary using Qwen2.5-1.5B-Instruct.
+
+    Frames the forecast as inventory movement: units forecasted to go OUT (sales)
+    versus the units that should come IN (restock) to cover that demand, grounded
+    in the product's inferred category/seasonality so the LLM can flag whether a
+    trend looks like normal seasonal movement or an actual demand shift.
+    """
+    prompt = f"""You are an expert inventory and sales forecasting analyst.
+
+Based on the data below, write a concise, professional summary (3-5 sentences) covering:
+1. Outbound inventory: how many units of this product are forecasted to leave inventory (be sold) over the period
+2. Inbound inventory: how many units should be restocked/received to cover that forecasted demand without stocking out
+3. How this period compares to the same period last year (trend direction and % change), and whether that looks like normal seasonal movement for this product's category or an actual demand shift
+4. Any actionable recommendation for purchasing or replenishment planning
+
+Data:
+- Product Name: {product}
+- Product Category: {tags['category']}
+- Seasonality: {tags['seasonality']}
+- Forecast Period: {duration} month(s)
+- Forecasted Units Out (Sales): {forecast}
+- Last Year Actual Units Out (Sales): {last_year_sales}
+- % Change from Previous Year: {percent_change}%
+
+Write the summary in a clear, professional tone suitable for a business inventory report.
+"""
+
+    messages = [
+        {"role": "system", "content": "You are a professional inventory and sales analyst. Provide concise, data-driven insights."},
+        {"role": "user", "content": prompt}
+    ]
+
+    generation_config = GenerationConfig(
+        max_new_tokens=512,
+        temperature=0.7,
+        top_p=0.95,
+        do_sample=True,
+        repetition_penalty=1.1
+    )
+
+    return _chat(messages, generation_config)
 
 
 def predict_sales_forecasting(data, start_date, duration):
@@ -91,40 +192,16 @@ def predict_sales_forecasting(data, start_date, duration):
             else "N/A"
         )
         
-        generated_text = ""
-        if not status:
-            prompt = f"""
-            Here is the sales forecasting data for a product:
-
-                Product Name: {product}
-            - % Change from Previous Year: {round(percent_change, 2) if percent_change != "N/A" else "N/A"}%
-            - Forecast: {round(sum_forecast_now)}
-            - Last Year Actual Sales: {round(actual_last_year_sales)}
-            - Duration: {forecast_start_date} - {end_date.date()}
-
-            Please provide a short summary that highlights the key trends in sales forecasts, including notable changes in forecasted sales and product performance.
-            """
-            input_ids = tokenizer.encode(prompt, return_tensors="pt")
-            attention_mask = (input_ids != model.config.pad_token_id).type(
-                input_ids.dtype
+        if ENABLE_AI_SUMMARY:
+            product_tags = classify_product(product)
+            generated_text = generate_summary(
+                product,
+                percent_change,
+                round(sum_forecast_now),
+                round(actual_last_year_sales),
+                duration,
+                product_tags,
             )
-
-            # Generate the output with parameters to control repetition and randomness
-            output = model.generate(
-                input_ids,
-                attention_mask=attention_mask,  # Pass attention mask
-                num_return_sequences=1,
-                do_sample=True,  # Enable sampling
-                temperature=0.9,  # Lower temperature for more focused output
-                max_length=1500,  # Shorter max length for concise output
-                top_p=0.9,  # Nucleus sampling for more diverse outputs
-                top_k=50,  # Limit the pool of possible next tokens
-                no_repeat_ngram_size=2,  # Avoid repeating n-grams
-                pad_token_id=model.config.pad_token_id,  # Ensure padding token is eos token
-            )
-
-            # Decode the generated output
-            generated_text = tokenizer.decode(output[0], skip_special_tokens=True)
         else:
             generated_text = "N/A"
 
