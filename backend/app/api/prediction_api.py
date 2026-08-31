@@ -1,7 +1,12 @@
 import os
 import pandas as pd
 from flask import Blueprint, jsonify, request
-from app.controllers.prediction_controller import predict_sales_forecasting, calculate_error_metrics
+from app.controllers.prediction_controller import (
+    predict_sales_forecasting,
+    calculate_error_metrics,
+    get_or_generate_summary,
+)
+from app.models.prediction import Prediction
 import json
 
 prediction_api_bp = Blueprint("prediction_api", __name__)
@@ -58,7 +63,20 @@ def error_metrics():
             return jsonify({"error": "Duration must be an integer"}), 400
 
         return jsonify(json.loads(calculate_error_metrics(file, start_date, duration))), 201
-        
+
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@prediction_api_bp.route("/<int:prediction_id>/summary", methods=["GET"])
+def get_summary(prediction_id):
+    try:
+        prediction = Prediction.query.get(prediction_id)
+        if prediction is None:
+            return jsonify({"error": "Prediction not found"}), 404
+
+        return jsonify({"Summary": get_or_generate_summary(prediction)}), 200
 
     except Exception as e:
         return jsonify({"error": str(e)}), 500

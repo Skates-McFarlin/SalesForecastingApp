@@ -9,6 +9,9 @@ class Prediction(db.Model):
     forecast = db.Column(db.String(120), nullable=False)
     actual_sales = db.Column(db.String(120), nullable=True)
     percent_change = db.Column(db.String(120), nullable=True)
+    category = db.Column(db.String(120), nullable=True)
+    seasonality = db.Column(db.String(60), nullable=True)
+    summary = db.Column(db.Text, nullable=True)
     created_at = db.Column(db.DateTime, default=db.func.current_timestamp())
 
     def __repr__(self):
