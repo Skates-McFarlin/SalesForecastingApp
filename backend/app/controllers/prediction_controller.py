@@ -18,6 +18,8 @@ from scipy.stats import norm
 from app.models.prediction import Prediction
 from app.models.file import File
 from app.extensions import db
+from app.forecasting import selector
+from app.forecasting.base import aggregate_interval, future_index
 from huggingface_hub import hf_hub_download
 import os
 
@@ -598,16 +600,9 @@ def generate_summary(
     return best
 
 
-# Deliberately modest, not scaled to every core on the host - this app's
-# whole premise is running well on ordinary hardware, not just fast ones.
-# Confirmed via benchmark that concurrent Prophet fits are both safe
-# (cmdstanpy shells out to a compiled binary per fit, its own process and
-# temp files, so the GIL and shared state aren't a concern) and meaningfully
-# faster (~0.07s/SKU effective at 4 workers vs ~0.19s/SKU sequential).
-PROPHET_MAX_WORKERS = min(4, os.cpu_count() or 1)
-
-# A SKU needs ~2 years of monthly data before Prophet can learn its own yearly
-# shape; below this it forecasts nearly flat, missing seasonal peaks entirely.
+# A SKU needs ~2 years of monthly data before a model can learn its own yearly
+# shape; below this it forecasts nearly flat, so thin SKUs take the borrowed-
+# shape cold-start path instead of the ensemble.
 SUFFICIENT_HISTORY_MONTHS = 24
 # Only SKUs with a full, repeated yearly cycle contribute to a pooled shape.
 MIN_POOL_MONTHS = 24
@@ -663,73 +658,6 @@ def _prior_index_from_season(season_tag):
     raw = {m: (1.6 if m in peaks else 1.0) for m in range(1, 13)}
     mean = sum(raw.values()) / 12
     return {m: raw[m] / mean for m in range(1, 13)}
-
-
-def _thin_history_interval_floor(n_months):
-    """Minimum relative half-width for a thin-history forecast's interval.
-
-    A level-only or short Prophet fit is falsely confident (few points, fit
-    tightly), and a borrowed seasonal shape adds an assumption Prophet's own
-    interval never accounts for. Widen to a floor that shrinks ~1/sqrt(history)
-    so a 4-month SKU (~±50%) shows a far wider range than an 18-month one
-    (~±24%). The caller only applies this below SUFFICIENT_HISTORY_MONTHS, so
-    mature SKUs keep their own (already trustworthy) intervals untouched."""
-    return min(0.6, 1.0 / (max(1, n_months) ** 0.5))
-
-
-def _fit_forecast(args):
-    """Fit Prophet and compute one product/SKU's forecast total + confidence
-    interval. Pure computation, no DB access - safe to run concurrently.
-
-    When `seasonal_index` is given (a thin SKU borrowing a shape from its
-    category or a seasonal prior), Prophet fits only the level/trend - which
-    is all thin data can support - and the borrowed monthly index redistributes
-    that level across the year. When it's None, the SKU has enough history to
-    learn its own seasonality and gets a plain Prophet fit, unchanged from
-    before."""
-    group_key, df_product, forecast_start_date, forecast_periods, seasonal_index = args
-
-    future = pd.date_range(
-        start=forecast_start_date, periods=forecast_periods, freq="MS"
-    ).to_frame(index=False, name="ds")
-    end_date = future["ds"].max() + pd.offsets.MonthEnd(0)
-
-    if seasonal_index is None:
-        m = Prophet()
-        m.fit(df_product[["ds", "y"]])
-        forecast = m.predict(future)
-        # Prophet's trend is linear and unaware that unit sales can't go
-        # negative - a steeply declining product extrapolated far enough
-        # forward can predict negative monthly sales. Clamp per month, not
-        # just the sum, since a single bad month could otherwise cancel out
-        # against good ones.
-        forecast["yhat"] = forecast["yhat"].clip(lower=0)
-    else:
-        m = Prophet(
-            yearly_seasonality=False, weekly_seasonality=False, daily_seasonality=False
-        )
-        m.fit(df_product[["ds", "y"]])
-        forecast = m.predict(future)
-        mult = future["ds"].dt.month.map(seasonal_index).to_numpy()
-        for col in ("yhat", "yhat_lower", "yhat_upper"):
-            forecast[col] = (forecast[col].to_numpy() * mult).clip(min=0)
-
-    sum_forecast_now = forecast["yhat"].sum()
-    forecast_low, forecast_high = _aggregate_interval(m, forecast, sum_forecast_now)
-
-    # Below the threshold, the forecast is either level-only (thin, nothing to
-    # borrow) or level x a borrowed shape - both leave Prophet over-confident.
-    # Floor the interval so the least-certain forecasts stop displaying the
-    # tightest-looking range. Mature SKUs (>= threshold) are excluded and keep
-    # their own intervals exactly.
-    n_months = len(df_product)
-    if n_months < SUFFICIENT_HISTORY_MONTHS:
-        floor = _thin_history_interval_floor(n_months)
-        forecast_low = min(forecast_low, sum_forecast_now * (1 - floor))
-        forecast_high = max(forecast_high, sum_forecast_now * (1 + floor))
-    forecast_low = max(0.0, forecast_low)
-
-    return group_key, (sum_forecast_now, forecast_low, forecast_high, end_date)
 
 
 def predict_sales_forecasting(data, start_date, duration):
@@ -831,21 +759,20 @@ def predict_sales_forecasting(data, start_date, duration):
         else:
             seasonal_index_by_group[group_key], method_by_group[group_key] = None, "limited history"
 
-    # Fit Prophet concurrently per SKU (see PROPHET_MAX_WORKERS/_fit_forecast
-    # for why this is safe and worthwhile) - this is the CPU-heavy part, so
-    # it runs as its own phase before the cheap, sequential DB-writing loop
-    # below rather than interleaved with it.
-    with ThreadPoolExecutor(max_workers=PROPHET_MAX_WORKERS) as executor:
-        fit_results = dict(executor.map(_fit_forecast, [
-            (group_key, df[df[group_col] == group_key], forecast_start_date,
-             forecast_periods, seasonal_index_by_group[group_key])
-            for group_key in products
-        ]))
+    # Forecast every SKU: an ensemble of fast statistical models + a global
+    # LightGBM for mature SKUs, borrowed-shape for thin ones. All batched, so
+    # this whole phase is a handful of vectorized calls, not a per-SKU fit
+    # loop (see app/forecasting/selector.py).
+    forecasts = selector.run_forecast(
+        df, group_col, list(products), forecast_start_date, forecast_periods,
+        category_by_group, own_months_by_group, seasonal_index_by_group,
+    )
+    end_date = future_index(forecast_start_date, forecast_periods).max() + pd.offsets.MonthEnd(0)
 
     # Prepare forecast results storage
     forecast_results = []
 
-    # Assemble each product/SKU's prediction from its precomputed fit
+    # Assemble each product/SKU's prediction from its forecast
     for group_key in products:
         # Filter dataset for the current product/SKU
         df_product = df[df[group_col] == group_key]
@@ -853,7 +780,9 @@ def predict_sales_forecasting(data, start_date, duration):
         sku = df_product["sku"].iloc[0] if has_sku else None
         extra_context = extra_context_by_group.get(group_key, {})
 
-        sum_forecast_now, forecast_low, forecast_high, end_date = fit_results[group_key]
+        model_label, fc = forecasts[group_key]
+        sum_forecast_now = fc.total
+        forecast_low, forecast_high = aggregate_interval(fc)
 
         selected_months = (
             df_product["ds"]
@@ -909,6 +838,7 @@ def predict_sales_forecasting(data, start_date, duration):
             history_months=history_months,
             has_data_gap=has_data_gap,
             forecast_method=method_by_group.get(group_key),
+            forecast_model=model_label,
             extra_context=json.dumps(extra_context) if extra_context else None,
         )
         db.session.add(prediction)
@@ -937,6 +867,7 @@ def predict_sales_forecasting(data, start_date, duration):
                 "HistoryMonths": history_months,
                 "HasDataGap": has_data_gap,
                 "ForecastMethod": method_by_group.get(group_key),
+                "ForecastModel": model_label,
             }
         )
 
@@ -965,26 +896,6 @@ def _has_data_gap(df_product):
         if run >= 2:
             return True
     return False
-
-
-def _aggregate_interval(model, forecast, total):
-    """Confidence interval for the summed forecast, not the sum of intervals.
-
-    Adding up each month's yhat_lower and yhat_upper describes the case where
-    every single month lands at its extreme together, which produced absurd
-    ranges in practice (9 to 517 units around a 261 forecast). Combining the
-    monthly spreads in quadrature instead treats the month-to-month errors as
-    largely independent, which understates correlated trend error but is far
-    closer to the truth than the naive sum.
-    """
-    try:
-        z = norm.ppf(0.5 + model.interval_width / 2)
-        sigmas = (forecast["yhat_upper"] - forecast["yhat_lower"]) / (2 * z)
-        spread = z * float(np.sqrt((sigmas**2).sum()))
-    except Exception:  # noqa: BLE001 - fall back to the raw bounds
-        return forecast["yhat_lower"].sum(), forecast["yhat_upper"].sum()
-
-    return max(0.0, total - spread), total + spread
 
 
 MONTH_NAMES = [

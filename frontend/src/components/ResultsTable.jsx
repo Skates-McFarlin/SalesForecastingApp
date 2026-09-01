@@ -399,7 +399,7 @@ function RowGroup({ row, columnCount, showComparison, share, isMover, isOpen, su
               <MiniStat label="History" value={<HistoryValue months={row.HistoryMonths} />} />
             </div>
 
-            <ForecastBasis method={row.ForecastMethod} />
+            <ForecastBasis method={row.ForecastMethod} model={row.ForecastModel} />
 
             <SectionLabel className="mb-2">AI analysis</SectionLabel>
             {summary?.loading && (
@@ -432,22 +432,30 @@ function MiniStat({ label, value }) {
   );
 }
 
-// Explains how a forecast was produced. The plain "own history" case is the
-// unremarkable default (shown muted); the borrowed-shape cases are the
-// interesting ones - they tell the user a thin/new product's seasonal shape
-// was inferred rather than measured, so the number carries more assumption.
-function ForecastBasis({ method }) {
-  if (!method) return null;
-  const borrowed = method !== "own history";
+// Explains how a forecast was produced. A mature SKU uses an ensemble of
+// statistical models + a global learner (the unremarkable default, shown
+// muted); a thin/new SKU is the interesting case - its seasonal shape was
+// inferred/borrowed rather than measured, so the number carries more
+// assumption (shown amber).
+function ForecastBasis({ method, model }) {
+  const cold = model === "seasonal-borrowed";
   let text;
-  if (method === "own history") text = "Based on this product's own sales history";
-  else if (method === "category seasonality")
-    text = "Seasonal shape borrowed from its category — limited own history";
-  else if (method === "overall seasonality")
-    text = "Seasonal shape borrowed from the whole catalog — limited own history";
-  else if (method.startsWith("seasonal prior"))
-    text = `Seasonal shape inferred from product type (${method.slice(method.indexOf("(") + 1, -1)}) — little history to learn from`;
-  else text = "Limited history — trend only, no seasonal shape applied";
+  if (cold) {
+    if (method === "category seasonality")
+      text = "New product — seasonal shape borrowed from its category";
+    else if (method === "overall seasonality")
+      text = "New product — seasonal shape borrowed from the whole catalog";
+    else if (method && method.startsWith("seasonal prior"))
+      text = `New product — seasonal shape inferred from its type (${method.slice(method.indexOf("(") + 1, -1)})`;
+    else text = "Limited history — trend only, no seasonal shape applied";
+  } else if (model === "ensemble") {
+    text = "Ensemble of statistical models + a cross-product learner";
+  } else if (model) {
+    text = `Forecast model: ${model}`;
+  } else {
+    return null;
+  }
+  const borrowed = cold;
 
   return (
     <div

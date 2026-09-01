@@ -44,6 +44,7 @@ def upgrade():
         sa.Column('history_months', sa.Integer(), nullable=True),
         sa.Column('has_data_gap', sa.Boolean(), nullable=True),
         sa.Column('forecast_method', sa.String(length=60), nullable=True),
+        sa.Column('forecast_model', sa.String(length=60), nullable=True),
         sa.Column('extra_context', sa.Text(), nullable=True),
         sa.Column('created_at', sa.DateTime(), nullable=True),
         sa.ForeignKeyConstraint(['file_id'], ['file.id']),
