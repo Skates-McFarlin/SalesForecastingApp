@@ -8,6 +8,7 @@ import subprocess
 import atexit
 import sys
 import socket
+from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 import requests
 from prophet import Prophet
@@ -605,27 +606,101 @@ def generate_summary(
 # faster (~0.07s/SKU effective at 4 workers vs ~0.19s/SKU sequential).
 PROPHET_MAX_WORKERS = min(4, os.cpu_count() or 1)
 
+# A SKU needs ~2 years of monthly data before Prophet can learn its own yearly
+# shape; below this it forecasts nearly flat, missing seasonal peaks entirely.
+SUFFICIENT_HISTORY_MONTHS = 24
+# Only SKUs with a full, repeated yearly cycle contribute to a pooled shape.
+MIN_POOL_MONTHS = 24
+
+# Maps the LLM's name-derived seasonality tag (the model's offline world
+# knowledge - a "space heater" is winter, "sunscreen" is summer) to the
+# calendar months a product like that peaks in. Used only as a last-resort
+# prior when a thin SKU has no siblings to borrow a measured shape from.
+SEASON_TO_PEAK_MONTHS = {
+    "winter": [12, 1, 2],
+    "spring": [3, 4, 5],
+    "summer": [6, 7, 8],
+    "fall": [9, 10, 11],
+    "holiday": [11, 12],
+}
+
+
+def _monthly_seasonal_index(df_group):
+    """A normalized 12-month seasonal shape (month -> multiplier around 1.0)
+    from a group's history, or None if there's no meaningful yearly signal. A
+    multiplier of 1.4 means that month runs 40% above the group's average
+    month; months never observed default to a neutral 1.0."""
+    if df_group.empty:
+        return None
+    monthly = df_group.groupby(df_group["ds"].dt.month)["y"].mean()
+    if len(monthly) < 6 or monthly.mean() <= 0:
+        return None
+    overall = monthly.mean()
+    observed = {int(m): float(v / overall) for m, v in monthly.items()}
+    return {m: observed.get(m, 1.0) for m in range(1, 13)}
+
+
+def _average_indices(index_list):
+    """Pool several per-SKU seasonal indices into one, renormalized to mean 1
+    so it only redistributes volume across the year without inflating the
+    annual total."""
+    if not index_list:
+        return None
+    summed = {m: sum(ix[m] for ix in index_list) / len(index_list) for m in range(1, 13)}
+    mean = sum(summed.values()) / 12
+    if mean <= 0:
+        return None
+    return {m: summed[m] / mean for m in range(1, 13)}
+
+
+def _prior_index_from_season(season_tag):
+    """Last-resort seasonal shape from the LLM's season tag, for a thin SKU
+    with no siblings to learn from. Deliberately gentle (a modest peak-month
+    lift, not a hard spike) since it's a type-level guess, not measured."""
+    peaks = SEASON_TO_PEAK_MONTHS.get((season_tag or "").lower())
+    if not peaks:
+        return None  # year-round / unknown -> impose no shape
+    raw = {m: (1.6 if m in peaks else 1.0) for m in range(1, 13)}
+    mean = sum(raw.values()) / 12
+    return {m: raw[m] / mean for m in range(1, 13)}
+
 
 def _fit_forecast(args):
     """Fit Prophet and compute one product/SKU's forecast total + confidence
-    interval. Pure computation, no DB access - safe to run concurrently."""
-    group_key, df_product, forecast_start_date, forecast_periods = args
+    interval. Pure computation, no DB access - safe to run concurrently.
 
-    m = Prophet()
-    m.fit(df_product[["ds", "y"]])
+    When `seasonal_index` is given (a thin SKU borrowing a shape from its
+    category or a seasonal prior), Prophet fits only the level/trend - which
+    is all thin data can support - and the borrowed monthly index redistributes
+    that level across the year. When it's None, the SKU has enough history to
+    learn its own seasonality and gets a plain Prophet fit, unchanged from
+    before."""
+    group_key, df_product, forecast_start_date, forecast_periods, seasonal_index = args
 
     future = pd.date_range(
         start=forecast_start_date, periods=forecast_periods, freq="MS"
     ).to_frame(index=False, name="ds")
     end_date = future["ds"].max() + pd.offsets.MonthEnd(0)
 
-    forecast = m.predict(future)
-    # Prophet's trend is linear and unaware that unit sales can't go
-    # negative - a steeply declining product extrapolated far enough
-    # forward can predict negative monthly sales. Clamp per month, not
-    # just the sum, since a single bad month could otherwise cancel out
-    # against good ones.
-    forecast["yhat"] = forecast["yhat"].clip(lower=0)
+    if seasonal_index is None:
+        m = Prophet()
+        m.fit(df_product[["ds", "y"]])
+        forecast = m.predict(future)
+        # Prophet's trend is linear and unaware that unit sales can't go
+        # negative - a steeply declining product extrapolated far enough
+        # forward can predict negative monthly sales. Clamp per month, not
+        # just the sum, since a single bad month could otherwise cancel out
+        # against good ones.
+        forecast["yhat"] = forecast["yhat"].clip(lower=0)
+    else:
+        m = Prophet(
+            yearly_seasonality=False, weekly_seasonality=False, daily_seasonality=False
+        )
+        m.fit(df_product[["ds", "y"]])
+        forecast = m.predict(future)
+        mult = future["ds"].dt.month.map(seasonal_index).to_numpy()
+        for col in ("yhat", "yhat_lower", "yhat_upper"):
+            forecast[col] = (forecast[col].to_numpy() * mult).clip(min=0)
 
     sum_forecast_now = forecast["yhat"].sum()
     forecast_low, forecast_high = _aggregate_interval(m, forecast, sum_forecast_now)
@@ -686,13 +761,60 @@ def predict_sales_forecasting(data, start_date, duration):
             })
         tags_by_group.update(classify_products_batch(classification_items))
 
+    # Decide each SKU's seasonal shape before fitting - the offline "smart out
+    # of the box" logic. A SKU with enough history learns its own yearly shape;
+    # a thin/new one borrows the measured shape of its category siblings, or -
+    # if even the category is thin - falls back to the seasonal prior implied
+    # by the LLM's world-knowledge tag. This is what lets a brand-new "winter
+    # jacket" forecast a winter peak instead of flat. _fit_forecast applies the
+    # chosen index; None means "enough history, use its own seasonality".
+    category_by_group = {}
+    own_months_by_group = {}
+    per_category_indices = defaultdict(list)
+    all_indices = []
+    for group_key in products:
+        df_g = df[df[group_col] == group_key]
+        tags = tags_by_group.get(group_key, {})
+        category = (
+            extra_context_by_group.get(group_key, {}).get("Category")
+            or tags.get("category")
+            or "unknown"
+        )
+        category_by_group[group_key] = category
+        own_months_by_group[group_key] = len(df_g)
+        if len(df_g) >= MIN_POOL_MONTHS:
+            idx = _monthly_seasonal_index(df_g)
+            if idx:
+                per_category_indices[category].append(idx)
+                all_indices.append(idx)
+    pooled_by_category = {c: _average_indices(v) for c, v in per_category_indices.items()}
+    pooled_all = _average_indices(all_indices)
+
+    seasonal_index_by_group = {}
+    method_by_group = {}
+    for group_key in products:
+        season_tag = tags_by_group.get(group_key, {}).get("seasonality", "unknown")
+        if own_months_by_group[group_key] >= SUFFICIENT_HISTORY_MONTHS:
+            seasonal_index_by_group[group_key], method_by_group[group_key] = None, "own history"
+        elif pooled_by_category.get(category_by_group[group_key]):
+            seasonal_index_by_group[group_key] = pooled_by_category[category_by_group[group_key]]
+            method_by_group[group_key] = "category seasonality"
+        elif pooled_all:
+            seasonal_index_by_group[group_key], method_by_group[group_key] = pooled_all, "overall seasonality"
+        elif _prior_index_from_season(season_tag):
+            seasonal_index_by_group[group_key] = _prior_index_from_season(season_tag)
+            method_by_group[group_key] = f"seasonal prior ({season_tag})"
+        else:
+            seasonal_index_by_group[group_key], method_by_group[group_key] = None, "limited history"
+
     # Fit Prophet concurrently per SKU (see PROPHET_MAX_WORKERS/_fit_forecast
     # for why this is safe and worthwhile) - this is the CPU-heavy part, so
     # it runs as its own phase before the cheap, sequential DB-writing loop
     # below rather than interleaved with it.
     with ThreadPoolExecutor(max_workers=PROPHET_MAX_WORKERS) as executor:
         fit_results = dict(executor.map(_fit_forecast, [
-            (group_key, df[df[group_col] == group_key], forecast_start_date, forecast_periods)
+            (group_key, df[df[group_col] == group_key], forecast_start_date,
+             forecast_periods, seasonal_index_by_group[group_key])
             for group_key in products
         ]))
 
@@ -762,6 +884,7 @@ def predict_sales_forecasting(data, start_date, duration):
             seasonality_note=_seasonality_note(df_product),
             history_months=history_months,
             has_data_gap=has_data_gap,
+            forecast_method=method_by_group.get(group_key),
             extra_context=json.dumps(extra_context) if extra_context else None,
         )
         db.session.add(prediction)
@@ -789,6 +912,7 @@ def predict_sales_forecasting(data, start_date, duration):
                 "Seasonality": product_tags["seasonality"],
                 "HistoryMonths": history_months,
                 "HasDataGap": has_data_gap,
+                "ForecastMethod": method_by_group.get(group_key),
             }
         )
 

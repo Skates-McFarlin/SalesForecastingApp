@@ -399,6 +399,8 @@ function RowGroup({ row, columnCount, showComparison, share, isMover, isOpen, su
               <MiniStat label="History" value={<HistoryValue months={row.HistoryMonths} />} />
             </div>
 
+            <ForecastBasis method={row.ForecastMethod} />
+
             <SectionLabel className="mb-2">AI analysis</SectionLabel>
             {summary?.loading && (
               <div className="flex items-center gap-2 text-sm text-[var(--ink-2)]">
@@ -426,6 +428,39 @@ function MiniStat({ label, value }) {
     <div className="bg-[var(--surface)] px-3 py-2">
       <SectionLabel>{label}</SectionLabel>
       <div className="tnum mt-1 text-sm font-semibold">{value}</div>
+    </div>
+  );
+}
+
+// Explains how a forecast was produced. The plain "own history" case is the
+// unremarkable default (shown muted); the borrowed-shape cases are the
+// interesting ones - they tell the user a thin/new product's seasonal shape
+// was inferred rather than measured, so the number carries more assumption.
+function ForecastBasis({ method }) {
+  if (!method) return null;
+  const borrowed = method !== "own history";
+  let text;
+  if (method === "own history") text = "Based on this product's own sales history";
+  else if (method === "category seasonality")
+    text = "Seasonal shape borrowed from its category — limited own history";
+  else if (method === "overall seasonality")
+    text = "Seasonal shape borrowed from the whole catalog — limited own history";
+  else if (method.startsWith("seasonal prior"))
+    text = `Seasonal shape inferred from product type (${method.slice(method.indexOf("(") + 1, -1)}) — little history to learn from`;
+  else text = "Limited history — trend only, no seasonal shape applied";
+
+  return (
+    <div
+      className={`mb-3 flex items-center gap-1.5 text-[11px] ${
+        borrowed ? "text-amber-600 dark:text-amber-400" : "text-[var(--ink-3)]"
+      }`}
+    >
+      <svg className="size-3 shrink-0" viewBox="0 0 14 14" fill="none">
+        <circle cx="7" cy="7" r="5.5" stroke="currentColor" strokeWidth="1.2" />
+        <path d="M7 6.2v3.2" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
+        <circle cx="7" cy="4.4" r="0.6" fill="currentColor" />
+      </svg>
+      {text}
     </div>
   );
 }

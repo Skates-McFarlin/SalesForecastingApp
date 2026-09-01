@@ -19,6 +19,7 @@ class Prediction(db.Model):
     summary_unverified = db.Column(db.Boolean, nullable=True)
     history_months = db.Column(db.Integer, nullable=True)
     has_data_gap = db.Column(db.Boolean, nullable=True)
+    forecast_method = db.Column(db.String(60), nullable=True)
     extra_context = db.Column(db.Text, nullable=True)
     created_at = db.Column(db.DateTime, default=db.func.current_timestamp())
 
