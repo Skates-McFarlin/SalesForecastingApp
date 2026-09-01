@@ -161,10 +161,28 @@ def _chat(messages, max_tokens, temperature=0.0, top_p=1.0):
     return resp.json()["choices"][0]["message"]["content"].strip()
 
 
-def _classification_messages(product_name):
+def _context_lines(sku=None, extra_context=None):
+    """Format a SKU and any extra file-provided columns (price, rating, brand,
+    whatever a given upload happens to include beyond name/SKU/quantities) as
+    labeled data lines, so per-SKU calls have real signal to differentiate on
+    instead of a repeated generic product name."""
+    lines = []
+    if sku:
+        lines.append(f"- SKU: {sku}")
+    for key, value in (extra_context or {}).items():
+        if value:
+            lines.append(f"- {key}: {value}")
+    return lines
+
+
+def _classification_messages(product_name, sku=None, extra_context=None):
+    context_block = "\n".join(_context_lines(sku, extra_context))
+    if context_block:
+        context_block = "\n" + context_block
+
     prompt = f"""Classify this product for a sales forecasting report.
 
-Product Name: {product_name}
+Product Name: {product_name}{context_block}
 
 Respond with ONLY a JSON object in this exact format, no other text:
 {{"seasonality": "<winter|spring|summer|fall|holiday|year-round|unknown>", "category": "<short 2-4 word category description>"}}
@@ -187,22 +205,82 @@ def _extract_tags(raw):
     }
 
 
-def classify_products_batch(product_names, max_workers=8):
+def classify_products_batch(items, max_workers=8):
     """Zero-shot classify many products' seasonality/category concurrently.
 
-    llama-server's --parallel slots do real server-side continuous batching;
-    the client just needs to fire concurrent requests to use it - a real
-    throughput win, not just deferred cost (empirically ~0.3s/item at 8
-    concurrent workers vs ~5.3s/item sequential). This is a stand-in for
-    real product context until an actual data source (a category taxonomy,
-    tariff schedule, etc.) is wired in via RAG later.
+    Runs one call per item (per SKU, not collapsed to distinct product
+    names) so two SKUs sharing a generic name can still classify
+    differently whenever the file gives them something to differ on (SKU
+    code, price, rating, whatever else is present) - collapsing by name
+    would erase exactly that distinction. llama-server's --parallel slots
+    do real server-side continuous batching; the client just needs to fire
+    concurrent requests to use it - a real throughput win, not just
+    deferred cost (empirically ~0.3s/item at 8 concurrent workers vs
+    ~5.3s/item sequential). This is a stand-in for real product context
+    until an actual data source (a category taxonomy, tariff schedule,
+    etc.) is wired in via RAG later.
+
+    `items`: list of dicts with keys "key" (unique grouping id to return
+    results under), "product_name", and optionally "sku"/"extra_context".
     """
-    def classify_one(name):
-        raw = _chat(_classification_messages(name), max_tokens=64, temperature=0.0)
-        return name, _extract_tags(raw)
+    def classify_one(item):
+        messages = _classification_messages(
+            item["product_name"], item.get("sku"), item.get("extra_context")
+        )
+        raw = _chat(messages, max_tokens=64, temperature=0.0)
+        return item["key"], _extract_tags(raw)
 
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        return dict(executor.map(classify_one, product_names))
+        return dict(executor.map(classify_one, items))
+
+
+def _cached_tags(has_sku, group_col, products, extra_context_by_group):
+    """Reuse classification results from earlier runs for products/SKUs
+    already seen before, so re-running the same catalog (a different date
+    range, a different duration) doesn't re-hit the LLM for products that
+    haven't changed. A cache hit requires the SKU (or product name, for
+    files with no SKU column) AND its extra file context (Category, and
+    whatever else a future file provides) to match exactly - if either
+    differs, it's treated as unseen and classified fresh, since stale
+    per-SKU signal is exactly what per-SKU classification exists to avoid.
+
+    Returns (tags_by_group, group_keys_still_needing_classification).
+    """
+    keys = list(products)
+    if not keys:
+        return {}, []
+
+    column = Prediction.sku if has_sku else Prediction.product_name
+    rows = (
+        Prediction.query.filter(column.in_(keys))
+        .order_by(Prediction.created_at.desc())
+        .all()
+    )
+
+    most_recent = {}
+    for row in rows:
+        key = row.sku if has_sku else row.product_name
+        most_recent.setdefault(key, row)  # rows are newest-first
+
+    tags_by_group = {}
+    to_classify = []
+    for group_key in products:
+        row = most_recent.get(group_key)
+        current_extra = extra_context_by_group.get(group_key, {})
+        if row is not None:
+            try:
+                cached_extra = json.loads(row.extra_context) if row.extra_context else {}
+            except (TypeError, ValueError):
+                cached_extra = {}
+            if cached_extra == current_extra:
+                tags_by_group[group_key] = {
+                    "category": row.category or "unknown",
+                    "seasonality": row.seasonality or "unknown",
+                }
+                continue
+        to_classify.append(group_key)
+
+    return tags_by_group, to_classify
 
 
 def _trend_sentence(percent_change, forecast, last_year_sales):
@@ -287,19 +365,25 @@ def _unsupported_numbers(text, prompt):
 def _build_summary_prompt(
     product, percent_change, forecast, last_year_sales, duration, tags,
     portfolio_context=None, forecast_low=None, forecast_high=None, seasonality_note=None,
+    sku=None, extra_context=None,
 ):
     """Assemble the summary prompt.
 
     Every line here is a fact computed from the data. The prompt deliberately
     does NOT ask for anything the data can't answer - notably a restock
     quantity, which this app has no inventory figures for, and which the model
-    used to satisfy by echoing the forecast back as if it were advice.
+    used to satisfy by echoing the forecast back as if it were advice. The
+    same rule applies to sku/extra_context: they're included so the model can
+    reference real per-SKU signal (a price column, a rating, whatever the
+    file happens to provide) when it exists, not so it can invent a tier or
+    reputation the data never stated.
     """
     # Direction in words rather than a signed number: a small model reads
     # "7.21%" against a larger forecast and still writes "a decrease of 7.21%"
     # a fair share of the time.
     lines = [
         f"- Product Name: {product}",
+        *_context_lines(sku, {k: v for k, v in (extra_context or {}).items() if k != "Category"}),
         f"- Product Category: {tags['category']}",
         f"- Forecast Period: {duration}",
         f"- Forecasted Units Sold: {forecast}",
@@ -360,6 +444,7 @@ Write in a clear, professional tone suitable for a business inventory report."""
 def generate_summary(
     product, percent_change, forecast, last_year_sales, duration, tags,
     portfolio_context=None, forecast_low=None, forecast_high=None, seasonality_note=None,
+    sku=None, extra_context=None,
 ):
     """Write a grounded narrative for one product's forecast.
 
@@ -371,6 +456,7 @@ def generate_summary(
     prompt = _build_summary_prompt(
         product, percent_change, forecast, last_year_sales, duration, tags,
         portfolio_context, forecast_low, forecast_high, seasonality_note,
+        sku, extra_context,
     )
     messages = [
         {"role": "system", "content": "You are a professional inventory and sales analyst. Provide concise, data-driven insights."},
@@ -389,15 +475,53 @@ def generate_summary(
     return best
 
 
+# Deliberately modest, not scaled to every core on the host - this app's
+# whole premise is running well on ordinary hardware, not just fast ones.
+# Confirmed via benchmark that concurrent Prophet fits are both safe
+# (cmdstanpy shells out to a compiled binary per fit, its own process and
+# temp files, so the GIL and shared state aren't a concern) and meaningfully
+# faster (~0.07s/SKU effective at 4 workers vs ~0.19s/SKU sequential).
+PROPHET_MAX_WORKERS = min(4, os.cpu_count() or 1)
+
+
+def _fit_forecast(args):
+    """Fit Prophet and compute one product/SKU's forecast total + confidence
+    interval. Pure computation, no DB access - safe to run concurrently."""
+    group_key, df_product, forecast_start_date, forecast_periods = args
+
+    m = Prophet()
+    m.fit(df_product[["ds", "y"]])
+
+    future = pd.date_range(
+        start=forecast_start_date, periods=forecast_periods, freq="MS"
+    ).to_frame(index=False, name="ds")
+    end_date = future["ds"].max() + pd.offsets.MonthEnd(0)
+
+    forecast = m.predict(future)
+    # Prophet's trend is linear and unaware that unit sales can't go
+    # negative - a steeply declining product extrapolated far enough
+    # forward can predict negative monthly sales. Clamp per month, not
+    # just the sum, since a single bad month could otherwise cancel out
+    # against good ones.
+    forecast["yhat"] = forecast["yhat"].clip(lower=0)
+
+    sum_forecast_now = forecast["yhat"].sum()
+    forecast_low, forecast_high = _aggregate_interval(m, forecast, sum_forecast_now)
+
+    return group_key, (sum_forecast_now, forecast_low, forecast_high, end_date)
+
+
 def predict_sales_forecasting(data, start_date, duration):
 
     file_data = data.read()
 
     file_record = File(filename=data.filename, filedata=file_data)
     db.session.add(file_record)
-    db.session.commit()
+    # flush (not commit): assigns file_record.id within the open transaction
+    # without fsyncing yet - the whole request commits once, at the end.
+    db.session.flush()
 
-    json_data = preprocess_data(data)
+    json_data, extra_context_by_group = preprocess_data(data)
     forecast_periods = duration
     forecast_start_date = start_date
     forecast_last_start_date = (
@@ -409,45 +533,59 @@ def predict_sales_forecasting(data, start_date, duration):
     # Ensure the date column is in datetime format
     df["ds"] = pd.to_datetime(df["ds"], format="%Y-%m-%d")
 
-    # Get unique products
-    products = df["product_name"].unique()
+    # Group by SKU when the file provides one (each SKU forecast
+    # separately - two SKUs sharing a generic product name, e.g. two
+    # different bicycle models, are different products), falling back to
+    # product name for files with no SKU column.
+    has_sku = df["sku"].astype(bool).any()
+    group_col = "sku" if has_sku else "product_name"
+    products = df[group_col].unique()
 
-    # Classify all products up front in batches (real throughput win, not
-    # just deferred cost - see classify_products_batch). The narrative
-    # summary itself stays on-demand per product via /api/predictions/<id>/summary.
-    tags_by_product = classify_products_batch(list(products))
+    # Classify every SKU individually (not collapsed by name) so real
+    # per-SKU signal - the SKU code itself, plus any extra columns the file
+    # provides - can differentiate products that happen to share a name.
+    # See classify_products_batch for why this stays cheap at SKU scale.
+    # Products already classified in an earlier run (same SKU, same extra
+    # context) reuse that result instead of hitting the LLM again - the
+    # dominant cost at catalog scale, and pure waste for a re-run of the
+    # same file with a different date range or duration.
+    tags_by_group, groups_needing_classification = _cached_tags(
+        has_sku, group_col, products, extra_context_by_group
+    )
+    if groups_needing_classification:
+        classification_items = []
+        for group_key in groups_needing_classification:
+            df_g = df[df[group_col] == group_key]
+            classification_items.append({
+                "key": group_key,
+                "product_name": df_g["product_name"].iloc[0],
+                "sku": df_g["sku"].iloc[0] if has_sku else None,
+                "extra_context": extra_context_by_group.get(group_key, {}),
+            })
+        tags_by_group.update(classify_products_batch(classification_items))
+
+    # Fit Prophet concurrently per SKU (see PROPHET_MAX_WORKERS/_fit_forecast
+    # for why this is safe and worthwhile) - this is the CPU-heavy part, so
+    # it runs as its own phase before the cheap, sequential DB-writing loop
+    # below rather than interleaved with it.
+    with ThreadPoolExecutor(max_workers=PROPHET_MAX_WORKERS) as executor:
+        fit_results = dict(executor.map(_fit_forecast, [
+            (group_key, df[df[group_col] == group_key], forecast_start_date, forecast_periods)
+            for group_key in products
+        ]))
 
     # Prepare forecast results storage
     forecast_results = []
 
-    # Forecast separately for each product
-    for product in products:
-        # Filter dataset for the current product
-        df_product = df[df["product_name"] == product]
+    # Assemble each product/SKU's prediction from its precomputed fit
+    for group_key in products:
+        # Filter dataset for the current product/SKU
+        df_product = df[df[group_col] == group_key]
+        product = df_product["product_name"].iloc[0]
+        sku = df_product["sku"].iloc[0] if has_sku else None
+        extra_context = extra_context_by_group.get(group_key, {})
 
-        # Initialize Prophet Model
-        m = Prophet()
-        m.fit(df_product[["ds", "y"]])
-
-        # Generate Future Dates for Forecasting (starting from custom date)
-        future = pd.date_range(
-            start=forecast_start_date, periods=forecast_periods, freq="MS"
-        ).to_frame(index=False, name="ds")
-
-        # Ensure the end date is the last day of the forecasted month
-        end_date = future["ds"].max() + pd.offsets.MonthEnd(0)
-
-        # Make Predictions for the Future
-        forecast = m.predict(future)
-        # Prophet's trend is linear and unaware that unit sales can't go
-        # negative - a steeply declining product extrapolated far enough
-        # forward can predict negative monthly sales. Clamp per month, not
-        # just the sum, since a single bad month could otherwise cancel out
-        # against good ones.
-        forecast["yhat"] = forecast["yhat"].clip(lower=0)
-
-        sum_forecast_now = forecast["yhat"].sum()
-        forecast_low, forecast_high = _aggregate_interval(m, forecast, sum_forecast_now)
+        sum_forecast_now, forecast_low, forecast_high, end_date = fit_results[group_key]
 
         selected_months = (
             df_product["ds"]
@@ -478,48 +616,61 @@ def predict_sales_forecasting(data, start_date, duration):
             else "N/A"
         )
         
-        product_tags = tags_by_product.get(product, {"seasonality": "unknown", "category": "unknown"})
+        product_tags = tags_by_group.get(group_key, {"seasonality": "unknown", "category": "unknown"})
+        # A real Category column beats an LLM guess - no reason to make the
+        # model re-derive something the file already states.
+        category = extra_context.get("Category") or product_tags["category"]
         history_months = len(df_product)
         has_data_gap = _has_data_gap(df_product)
 
         prediction = Prediction(
             file_id=file_record.id,
             product_name=product,
+            sku=sku,
             duration=f"{forecast_start_date} - {end_date.date()}",
             forecast=str(round(sum_forecast_now)),
             actual_sales=str(round(actual_last_year_sales)),
             percent_change=str(
                 (round(percent_change, 2) if percent_change != "N/A" else "N/A")
             ),
-            category=product_tags["category"],
+            category=category,
             seasonality=product_tags["seasonality"],
             forecast_low=str(round(forecast_low)),
             forecast_high=str(round(forecast_high)),
             seasonality_note=_seasonality_note(df_product),
             history_months=history_months,
             has_data_gap=has_data_gap,
+            extra_context=json.dumps(extra_context) if extra_context else None,
         )
         db.session.add(prediction)
-        db.session.commit()
+        # flush, not commit: assigns prediction.id (needed below) but skips
+        # the fsync-per-row cost - previously the dominant cost of this loop
+        # once catalogs reached SKU scale (hundreds of individual commits).
+        # One real commit happens after the loop.
+        db.session.flush()
 
         # Store the result in the required format
         forecast_results.append(
             {
                 "PredictionId": prediction.id,
                 "ProductName": product,
+                "Sku": sku,
                 "Duration": f"{forecast_start_date} - {end_date.date()}",
                 "Forecast": round(sum_forecast_now),
+                "ForecastLow": round(forecast_low),
+                "ForecastHigh": round(forecast_high),
                 "Last Year Actual Sales": round(actual_last_year_sales),
                 "% Change from Previous Year": (
                     round(percent_change, 2) if percent_change != "N/A" else "N/A"
                 ),
-                "Category": product_tags["category"],
+                "Category": category,
                 "Seasonality": product_tags["seasonality"],
                 "HistoryMonths": history_months,
                 "HasDataGap": has_data_gap,
             }
         )
 
+    db.session.commit()
     return json.dumps(forecast_results, indent=4)
 
 
@@ -648,6 +799,11 @@ def get_or_generate_summary(prediction):
         "seasonality": prediction.seasonality or "unknown",
     }
 
+    try:
+        extra_context = json.loads(prediction.extra_context) if prediction.extra_context else {}
+    except (TypeError, ValueError):
+        extra_context = {}
+
     summary, unsupported = generate_summary(
         prediction.product_name,
         prediction.percent_change,
@@ -659,6 +815,8 @@ def get_or_generate_summary(prediction):
         prediction.forecast_low,
         prediction.forecast_high,
         prediction.seasonality_note,
+        prediction.sku,
+        extra_context,
     )
 
     prediction.summary = summary
@@ -686,6 +844,9 @@ def _read_rows(data):
     return df.astype(str).to_dict(orient="records"), [str(c) for c in df.columns]
 
 
+SKU_COLUMN = "Product ID (SKU)"
+
+
 def preprocess_data(data):
     json_data = []
     rows, headers = _read_rows(data)
@@ -702,12 +863,29 @@ def preprocess_data(data):
         if match:
             years.add(int(match.group(1)))
 
+    has_sku_column = SKU_COLUMN in headers
+    # Any column that isn't the name, the SKU, or a dated quantity column is
+    # per-SKU context the file happens to provide (today just Category, but
+    # written generically - a future file with a price or rating column
+    # flows through here with no further code changes).
+    extra_columns = [
+        h for h in headers if h not in sales_columns and h not in ("Product Name", SKU_COLUMN)
+    ]
+
     # Dictionary to store aggregated sales
     aggregated_data = {}
+    extra_context_by_group = {}
 
     # Loop through each row
     for row in rows:
         product_name = row["Product Name"]
+        sku = row.get(SKU_COLUMN, "").strip() if has_sku_column else ""
+        group_key = sku or product_name
+
+        if group_key not in extra_context_by_group:
+            extra_context_by_group[group_key] = {
+                col: row[col] for col in extra_columns if row.get(col, "")
+            }
 
         # Loop through the years and months dynamically
         for year in range(min(years), max(years) + 1):
@@ -732,8 +910,8 @@ def preprocess_data(data):
                         "%Y-%m-%d"
                     )
 
-                    # **Aggregate Sales for Each Product and Date**
-                    key = (product_name, date_str)
+                    # **Aggregate Sales for Each Product/SKU and Date**
+                    key = (group_key, date_str)
                     if key in aggregated_data:
                         aggregated_data[key]["y"] += quantity_sold
                     else:
@@ -741,16 +919,17 @@ def preprocess_data(data):
                             "ds": date_str,
                             "y": quantity_sold,
                             "product_name": product_name,
+                            "sku": sku,
                         }
 
     # Convert aggregated data dictionary to a list
     json_data = list(aggregated_data.values())
 
-    return json_data
+    return json_data, extra_context_by_group
 
 
 def calculate_error_metrics(data, start_date, duration):
-    json_data = preprocess_data(data)
+    json_data, _ = preprocess_data(data)
     forecast_periods = duration
     forecast_start_date = start_date  # e.g., "2024-03-01"
     training_cutoff = pd.to_datetime(

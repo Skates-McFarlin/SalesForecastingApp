@@ -4,7 +4,6 @@ import { Badge, DeltaBadge, formatNumber, Input, SectionLabel, Select, Spinner }
 
 const BASE_COLUMNS = [
   { key: "ProductName", label: "Product", align: "left" },
-  { key: "HistoryMonths", label: "History", align: "right" },
   { key: "Forecast", label: "Forecast", align: "right" },
   { key: "__share", label: "Share", align: "right" },
 ];
@@ -16,11 +15,50 @@ const COMPARISON_COLUMNS = [
 
 const THIN_HISTORY_MONTHS = 6;
 const MOVER_COUNT = 3;
+const PAGE_SIZE_OPTIONS = [25, 50, 100];
 
 // "Biggest mover" means largest swing either direction, so this must be an
 // absolute value - a -40% decline is as much a mover as a +40% gain, and a
 // signed sort would silently rank every decline below every gain.
 const changeMagnitude = (value) => Math.abs(Number(String(value).replace("%", "")));
+
+function csvCell(value) {
+  const s = value == null ? "" : String(value);
+  return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+}
+
+function exportCsv(rows) {
+  const headers = [
+    "Product", "SKU", "Category", "History (mo)", "Forecast",
+    "Share of total", "Last year", "Change",
+  ];
+  const total = rows.reduce((sum, r) => sum + Number(r.Forecast || 0), 0);
+  const lines = [headers.map(csvCell).join(",")];
+  for (const r of rows) {
+    const share = total > 0 ? ((Number(r.Forecast || 0) / total) * 100).toFixed(1) + "%" : "";
+    lines.push(
+      [
+        r.ProductName,
+        r.Sku || "",
+        r.Category || "",
+        r.HistoryMonths ?? "",
+        r.Forecast,
+        share,
+        r["Last Year Actual Sales"],
+        r["% Change from Previous Year"] === "N/A" ? "N/A" : `${r["% Change from Previous Year"]}%`,
+      ]
+        .map(csvCell)
+        .join(",")
+    );
+  }
+  const blob = new Blob([lines.join("\n")], { type: "text/csv;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `forecast-results-${new Date().toISOString().slice(0, 10)}.csv`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
 
 export default function ResultsTable({ rows }) {
   const [query, setQuery] = useState("");
@@ -28,11 +66,14 @@ export default function ResultsTable({ rows }) {
   // null = use the computed default for this dataset; a real value once the
   // user clicks a column header. Reset on every new forecast run below.
   const [sort, setSort] = useState(null);
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(PAGE_SIZE_OPTIONS[1]);
   const [expanded, setExpanded] = useState(null);
   const [summaries, setSummaries] = useState({});
 
   useEffect(() => {
     setSort(null);
+    setPage(1);
   }, [rows]);
 
   const categories = useMemo(
@@ -69,7 +110,9 @@ export default function ResultsTable({ rows }) {
     const q = query.trim().toLowerCase();
     const filtered = rows.filter(
       (r) =>
-        (!q || r.ProductName.toLowerCase().includes(q)) &&
+        (!q ||
+          r.ProductName.toLowerCase().includes(q) ||
+          (r.Sku || "").toLowerCase().includes(q)) &&
         (category === "all" || r.Category === category)
     );
     const { key, dir } = effectiveSort;
@@ -94,6 +137,20 @@ export default function ResultsTable({ rows }) {
       return dir === "asc" ? cmp : -cmp;
     });
   }, [rows, query, category, effectiveSort, totalForecast]);
+
+  // Search/sort/filter reach every row regardless of page - only what's
+  // rendered changes. Re-clamp whenever the filtered set or page size shifts
+  // out from under the current page (e.g. a search narrows past the last page).
+  const pageCount = pageSize === "all" ? 1 : Math.max(1, Math.ceil(visible.length / pageSize));
+  useEffect(() => {
+    if (page > pageCount) setPage(pageCount);
+  }, [page, pageCount]);
+
+  const pageRows = useMemo(() => {
+    if (pageSize === "all") return visible;
+    const start = (page - 1) * pageSize;
+    return visible.slice(start, start + pageSize);
+  }, [visible, page, pageSize]);
 
   const toggle = async (row) => {
     const id = row.PredictionId;
@@ -130,7 +187,7 @@ export default function ResultsTable({ rows }) {
           </svg>
           <Input
             className="pl-9"
-            placeholder="Search products"
+            placeholder="Search products or SKUs"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
           />
@@ -149,6 +206,16 @@ export default function ResultsTable({ rows }) {
             ))}
           </Select>
         )}
+        <button
+          onClick={() => exportCsv(visible)}
+          className="inline-flex items-center gap-1.5 rounded-lg border border-[var(--line-strong)] px-3 py-2 text-xs font-medium text-[var(--ink-2)] transition-colors hover:bg-[var(--surface-2)] hover:text-[var(--ink)]"
+        >
+          <svg className="size-3.5" viewBox="0 0 14 14" fill="none">
+            <path d="M7 1.5v8M7 9.5 4 6.5M7 9.5l3-3" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
+            <path d="M1.5 10.5v1a1 1 0 0 0 1 1h9a1 1 0 0 0 1-1v-1" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
+          </svg>
+          Export CSV
+        </button>
         <span className="tnum ml-auto text-xs text-[var(--ink-3)]">
           {visible.length === rows.length
             ? `${rows.length} products`
@@ -191,7 +258,7 @@ export default function ResultsTable({ rows }) {
             </tr>
           </thead>
           <tbody>
-            {visible.map((row) => (
+            {pageRows.map((row) => (
               <RowGroup
                 key={row.PredictionId}
                 row={row}
@@ -213,6 +280,49 @@ export default function ResultsTable({ rows }) {
           </div>
         )}
       </div>
+
+      {visible.length > PAGE_SIZE_OPTIONS[0] && (
+        <div className="mt-3 flex items-center justify-between gap-3">
+          <div className="flex items-center gap-1.5 text-xs text-[var(--ink-3)]">
+            Rows per page
+            <Select
+              className="w-auto py-1"
+              value={pageSize}
+              onChange={(e) => {
+                const v = e.target.value;
+                setPageSize(v === "all" ? "all" : Number(v));
+                setPage(1);
+              }}
+            >
+              {PAGE_SIZE_OPTIONS.map((n) => (
+                <option key={n} value={n}>
+                  {n}
+                </option>
+              ))}
+              <option value="all">All</option>
+            </Select>
+          </div>
+          <div className="flex items-center gap-2 text-xs">
+            <button
+              onClick={() => setPage((p) => Math.max(1, p - 1))}
+              disabled={page <= 1}
+              className="rounded-md border border-[var(--line-strong)] px-2 py-1 font-medium text-[var(--ink-2)] transition-colors hover:bg-[var(--surface-2)] disabled:opacity-40"
+            >
+              Prev
+            </button>
+            <span className="tnum text-[var(--ink-3)]">
+              Page {page} of {pageCount}
+            </span>
+            <button
+              onClick={() => setPage((p) => Math.min(pageCount, p + 1))}
+              disabled={page >= pageCount}
+              className="rounded-md border border-[var(--line-strong)] px-2 py-1 font-medium text-[var(--ink-2)] transition-colors hover:bg-[var(--surface-2)] disabled:opacity-40"
+            >
+              Next
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -242,14 +352,12 @@ function RowGroup({ row, columnCount, showComparison, share, isMover, isOpen, su
         </td>
         <td className="px-3 py-2.5">
           <div className="font-medium">{row.ProductName}</div>
+          {row.Sku && <div className="tnum mt-0.5 text-[11px] text-[var(--ink-3)]">{row.Sku}</div>}
           <div className="mt-1 flex flex-wrap gap-1">
             <Badge>{row.Category}</Badge>
             {row.HasDataGap && <GapBadge />}
             {isMover && <MoverBadge />}
           </div>
-        </td>
-        <td className="px-3 py-2.5 text-right">
-          <HistoryValue months={row.HistoryMonths} />
         </td>
         <td className="tnum px-3 py-2.5 text-right font-medium">{formatNumber(row.Forecast)}</td>
         <td className="tnum px-3 py-2.5 text-right text-[var(--ink-2)]">{share.toFixed(1)}%</td>
@@ -273,7 +381,24 @@ function RowGroup({ row, columnCount, showComparison, share, isMover, isOpen, su
       {isOpen && (
         <tr className="border-b border-[var(--line)] bg-accent-500/4">
           <td />
-          <td colSpan={columnCount} className="px-3 pt-1 pb-4">
+          <td colSpan={columnCount} className="px-3 pt-3 pb-4">
+            <div className="mb-3 grid grid-cols-2 gap-px overflow-hidden rounded-lg border border-[var(--line)] bg-[var(--line)] sm:grid-cols-4">
+              <MiniStat label="Forecast" value={formatNumber(row.Forecast)} />
+              <MiniStat
+                label="Vs last year"
+                value={changeValue === "N/A" ? "—" : <DeltaBadge value={changeValue} />}
+              />
+              <MiniStat
+                label="Confidence range"
+                value={
+                  row.ForecastLow != null && row.ForecastHigh != null
+                    ? `${formatNumber(row.ForecastLow)}–${formatNumber(row.ForecastHigh)}`
+                    : "—"
+                }
+              />
+              <MiniStat label="History" value={<HistoryValue months={row.HistoryMonths} />} />
+            </div>
+
             <SectionLabel className="mb-2">AI analysis</SectionLabel>
             {summary?.loading && (
               <div className="flex items-center gap-2 text-sm text-[var(--ink-2)]">
@@ -296,6 +421,15 @@ function RowGroup({ row, columnCount, showComparison, share, isMover, isOpen, su
   );
 }
 
+function MiniStat({ label, value }) {
+  return (
+    <div className="bg-[var(--surface)] px-3 py-2">
+      <SectionLabel>{label}</SectionLabel>
+      <div className="tnum mt-1 text-sm font-semibold">{value}</div>
+    </div>
+  );
+}
+
 function HistoryValue({ months }) {
   if (months == null) return <span className="text-[var(--ink-3)]">—</span>;
   const thin = months < THIN_HISTORY_MONTHS;
@@ -306,7 +440,7 @@ function HistoryValue({ months }) {
           ? `Only ${months} month${months === 1 ? "" : "s"} of sales history — forecast may be less reliable`
           : `${months} months of sales history`
       }
-      className={`tnum text-sm ${thin ? "font-medium text-amber-600 dark:text-amber-400" : "text-[var(--ink-2)]"}`}
+      className={thin ? "font-medium text-amber-600 dark:text-amber-400" : ""}
     >
       {months} mo
     </span>
