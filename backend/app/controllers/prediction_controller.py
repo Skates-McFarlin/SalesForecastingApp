@@ -43,7 +43,94 @@ llama_process = None
 # through a server this app doesn't own (possibly from an entirely different
 # build). An ephemeral port makes that collision impossible.
 llama_server_port = None
+# Job-object handle kept alive for the life of this process: the job is set to
+# kill its members when its last handle closes, so this global MUST stay
+# referenced or llama-server would be killed the moment it's garbage-collected.
+llama_job = None
 model_status = {"status": "starting", "ready": False, "error": None}
+
+
+def _bind_child_to_process_lifetime(process):
+    """Tie llama-server's lifetime to this backend via a Windows job object,
+    so the OS kills it whenever run.exe exits - including a force-kill that
+    skips atexit and Electron's taskkill. An installer force-kills the running
+    app to swap files, which otherwise orphans llama-server (a real leak seen
+    in testing). Returns the job handle, which the CALLER MUST keep referenced
+    (see llama_job) - the job kills its members when its last handle closes,
+    so letting it be collected would immediately kill the child. Best-effort:
+    returns None off Windows or on any API failure, where the graceful
+    atexit/taskkill cleanup still covers the normal shutdown path.
+    """
+    if os.name != "nt":
+        return None
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x2000
+        JobObjectExtendedLimitInformation = 9
+        ULONG_PTR = ctypes.c_size_t
+
+        class JOBOBJECT_BASIC_LIMIT_INFORMATION(ctypes.Structure):
+            _fields_ = [
+                ("PerProcessUserTimeLimit", ctypes.c_int64),
+                ("PerJobUserTimeLimit", ctypes.c_int64),
+                ("LimitFlags", wintypes.DWORD),
+                ("MinimumWorkingSetSize", ctypes.c_size_t),
+                ("MaximumWorkingSetSize", ctypes.c_size_t),
+                ("ActiveProcessLimit", wintypes.DWORD),
+                ("Affinity", ULONG_PTR),
+                ("PriorityClass", wintypes.DWORD),
+                ("SchedulingClass", wintypes.DWORD),
+            ]
+
+        class IO_COUNTERS(ctypes.Structure):
+            _fields_ = [
+                ("ReadOperationCount", ctypes.c_uint64),
+                ("WriteOperationCount", ctypes.c_uint64),
+                ("OtherOperationCount", ctypes.c_uint64),
+                ("ReadTransferCount", ctypes.c_uint64),
+                ("WriteTransferCount", ctypes.c_uint64),
+                ("OtherTransferCount", ctypes.c_uint64),
+            ]
+
+        class JOBOBJECT_EXTENDED_LIMIT_INFORMATION(ctypes.Structure):
+            _fields_ = [
+                ("BasicLimitInformation", JOBOBJECT_BASIC_LIMIT_INFORMATION),
+                ("IoInfo", IO_COUNTERS),
+                ("ProcessMemoryLimit", ctypes.c_size_t),
+                ("JobMemoryLimit", ctypes.c_size_t),
+                ("PeakProcessMemoryUsed", ctypes.c_size_t),
+                ("PeakJobMemoryUsed", ctypes.c_size_t),
+            ]
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.CreateJobObjectW.restype = wintypes.HANDLE
+        kernel32.CreateJobObjectW.argtypes = [wintypes.LPVOID, wintypes.LPCWSTR]
+        kernel32.SetInformationJobObject.restype = wintypes.BOOL
+        kernel32.SetInformationJobObject.argtypes = [
+            wintypes.HANDLE, ctypes.c_int, wintypes.LPVOID, wintypes.DWORD,
+        ]
+        kernel32.AssignProcessToJobObject.restype = wintypes.BOOL
+        kernel32.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
+
+        job = kernel32.CreateJobObjectW(None, None)
+        if not job:
+            raise ctypes.WinError(ctypes.get_last_error())
+
+        info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION()
+        info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+        if not kernel32.SetInformationJobObject(
+            job, JobObjectExtendedLimitInformation, ctypes.byref(info), ctypes.sizeof(info)
+        ):
+            raise ctypes.WinError(ctypes.get_last_error())
+
+        if not kernel32.AssignProcessToJobObject(job, int(process._handle)):
+            raise ctypes.WinError(ctypes.get_last_error())
+
+        return job
+    except Exception:  # noqa: BLE001 - best effort; graceful cleanup still applies
+        return None
 
 
 def _llama_base_url():
@@ -120,7 +207,7 @@ def _load_model():
     the background, so Flask can start serving immediately and report real
     progress via /api/health instead of blocking startup.
     """
-    global llama_process, llama_server_port
+    global llama_process, llama_server_port, llama_job
     try:
         if not _model_already_present():
             model_status["status"] = "downloading_model"
@@ -148,6 +235,9 @@ def _load_model():
             stderr=subprocess.DEVNULL,
             creationflags=creationflags,
         )
+        # Held in a module global so the OS tears down llama-server if this
+        # backend is force-killed (installer swap) without a graceful stop.
+        llama_job = _bind_child_to_process_lifetime(llama_process)
 
         for _ in range(120):
             # Check our own child first: a healthy response from a server we
