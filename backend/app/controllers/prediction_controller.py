@@ -7,6 +7,7 @@ import time
 import subprocess
 import atexit
 import sys
+import socket
 from concurrent.futures import ThreadPoolExecutor
 import requests
 from prophet import Prophet
@@ -23,8 +24,6 @@ GGUF_REPO_ID = "Qwen/Qwen2.5-1.5B-Instruct-GGUF"
 GGUF_FILENAME = "qwen2.5-1.5b-instruct-q4_k_m.gguf"
 
 LLAMA_SERVER_HOST = "127.0.0.1"
-LLAMA_SERVER_PORT = 8081
-LLAMA_SERVER_BASE_URL = f"http://{LLAMA_SERVER_HOST}:{LLAMA_SERVER_PORT}"
 
 # Persistent, always-writable location (survives reinstalls, works regardless
 # of install-dir permissions) - same pattern as the SQLite DB path.
@@ -37,7 +36,31 @@ MODEL_DIR = (
 MODEL_FILE = os.path.join(MODEL_DIR, GGUF_FILENAME)
 
 llama_process = None
+# Chosen fresh each startup rather than hardcoded. A crashed or force-killed
+# app leaves an orphaned llama-server still holding its port; with a fixed
+# port, the next launch's health check would go green against that stale
+# process - reporting "ready" in ~0s while silently doing all its inference
+# through a server this app doesn't own (possibly from an entirely different
+# build). An ephemeral port makes that collision impossible.
+llama_server_port = None
 model_status = {"status": "starting", "ready": False, "error": None}
+
+
+def _llama_base_url():
+    return f"http://{LLAMA_SERVER_HOST}:{llama_server_port}"
+
+
+def _free_port():
+    """Ask the OS for an unused port, then hand it to llama-server.
+
+    There's a small race between closing this socket and llama-server
+    binding it, but the readiness check below verifies our own child is
+    alive and serving, so a lost race surfaces as a clear startup error
+    rather than a silent misconnection.
+    """
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind((LLAMA_SERVER_HOST, 0))
+        return sock.getsockname()[1]
 
 
 def _llama_server_exe():
@@ -97,7 +120,7 @@ def _load_model():
     the background, so Flask can start serving immediately and report real
     progress via /api/health instead of blocking startup.
     """
-    global llama_process
+    global llama_process, llama_server_port
     try:
         if not _model_already_present():
             model_status["status"] = "downloading_model"
@@ -110,13 +133,14 @@ def _load_model():
 
         model_status["status"] = "loading_model"
         server_exe = _llama_server_exe()
+        llama_server_port = _free_port()
         creationflags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
         llama_process = subprocess.Popen(
             [
                 server_exe,
                 "--model", MODEL_FILE,
                 "--host", LLAMA_SERVER_HOST,
-                "--port", str(LLAMA_SERVER_PORT),
+                "--port", str(llama_server_port),
                 "--parallel", "8",
             ],
             cwd=os.path.dirname(server_exe),
@@ -126,8 +150,16 @@ def _load_model():
         )
 
         for _ in range(120):
+            # Check our own child first: a healthy response from a server we
+            # didn't spawn is not success, and if our process died there's
+            # nothing to wait for - fail now with the exit code rather than
+            # polling a port someone else may answer on.
+            if llama_process.poll() is not None:
+                raise RuntimeError(
+                    f"llama-server exited during startup (code {llama_process.returncode})"
+                )
             try:
-                if requests.get(f"{LLAMA_SERVER_BASE_URL}/health", timeout=2).status_code == 200:
+                if requests.get(f"{_llama_base_url()}/health", timeout=2).status_code == 200:
                     break
             except requests.RequestException:
                 pass
@@ -153,7 +185,7 @@ def _chat(messages, max_tokens, temperature=0.0, top_p=1.0):
     transformers-based path.
     """
     resp = requests.post(
-        f"{LLAMA_SERVER_BASE_URL}/v1/chat/completions",
+        f"{_llama_base_url()}/v1/chat/completions",
         json={"messages": messages, "max_tokens": max_tokens, "temperature": temperature, "top_p": top_p},
         timeout=120,
     )
