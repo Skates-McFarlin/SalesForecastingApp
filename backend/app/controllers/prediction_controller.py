@@ -665,6 +665,18 @@ def _prior_index_from_season(season_tag):
     return {m: raw[m] / mean for m in range(1, 13)}
 
 
+def _thin_history_interval_floor(n_months):
+    """Minimum relative half-width for a thin-history forecast's interval.
+
+    A level-only or short Prophet fit is falsely confident (few points, fit
+    tightly), and a borrowed seasonal shape adds an assumption Prophet's own
+    interval never accounts for. Widen to a floor that shrinks ~1/sqrt(history)
+    so a 4-month SKU (~±50%) shows a far wider range than an 18-month one
+    (~±24%). The caller only applies this below SUFFICIENT_HISTORY_MONTHS, so
+    mature SKUs keep their own (already trustworthy) intervals untouched."""
+    return min(0.6, 1.0 / (max(1, n_months) ** 0.5))
+
+
 def _fit_forecast(args):
     """Fit Prophet and compute one product/SKU's forecast total + confidence
     interval. Pure computation, no DB access - safe to run concurrently.
@@ -704,6 +716,18 @@ def _fit_forecast(args):
 
     sum_forecast_now = forecast["yhat"].sum()
     forecast_low, forecast_high = _aggregate_interval(m, forecast, sum_forecast_now)
+
+    # Below the threshold, the forecast is either level-only (thin, nothing to
+    # borrow) or level x a borrowed shape - both leave Prophet over-confident.
+    # Floor the interval so the least-certain forecasts stop displaying the
+    # tightest-looking range. Mature SKUs (>= threshold) are excluded and keep
+    # their own intervals exactly.
+    n_months = len(df_product)
+    if n_months < SUFFICIENT_HISTORY_MONTHS:
+        floor = _thin_history_interval_floor(n_months)
+        forecast_low = min(forecast_low, sum_forecast_now * (1 - floor))
+        forecast_high = max(forecast_high, sum_forecast_now * (1 + floor))
+    forecast_low = max(0.0, forecast_low)
 
     return group_key, (sum_forecast_now, forecast_low, forecast_high, end_date)
 
