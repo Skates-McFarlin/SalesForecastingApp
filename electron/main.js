@@ -111,7 +111,30 @@ function loadingHtml(message) {
     `);
 }
 
+// Only one copy of the app may run at a time. Without this, a second launch
+// (the NSIS installer auto-launches on finish, so installing over a running
+// app is the common trigger) spawns a second backend; both bind 127.0.0.1:5000
+// via SO_REUSEADDR and write the same SQLite file through separate WALs, and a
+// force-kill of either (installers force-kill to replace files) can strand
+// uncheckpointed WAL data - observed as the database losing rows. The lock
+// makes the second instance hand off to the first and quit instead.
+const gotSingleInstanceLock = app.requestSingleInstanceLock();
+if (!gotSingleInstanceLock) {
+    app.quit();
+} else {
+    app.on('second-instance', () => {
+        if (mainWindow) {
+            if (mainWindow.isMinimized()) mainWindow.restore();
+            mainWindow.focus();
+        }
+    });
+}
+
 app.whenReady().then(async () => {
+    // A losing second instance has already called app.quit(); quit is async,
+    // so bail out here too rather than spawning a backend on the way out.
+    if (!gotSingleInstanceLock) return;
+
     mainWindow = new BrowserWindow({
         width: 1200,
         height: 800,
