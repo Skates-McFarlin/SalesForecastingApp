@@ -448,6 +448,8 @@ function ForecastBasis({ method, model }) {
     else if (method && method.startsWith("seasonal prior"))
       text = `New product — seasonal shape inferred from its type (${method.slice(method.indexOf("(") + 1, -1)})`;
     else text = "Limited history — trend only, no seasonal shape applied";
+  } else if (model === "intermittent") {
+    text = "Erratic on-and-off demand — blended with intermittent-demand models (Croston/TSB)";
   } else if (model === "ensemble") {
     text = "Ensemble of statistical models + a cross-product learner";
   } else if (model) {
