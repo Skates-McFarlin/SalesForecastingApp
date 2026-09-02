@@ -155,3 +155,27 @@ export function formatNumber(n) {
   if (Number.isNaN(v)) return "—";
   return v.toLocaleString(undefined, { maximumFractionDigits: 0 });
 }
+
+// Service levels (probability of not stocking out) and their z-multipliers.
+// The forecast's ~80% conformal interval has an upper half-width of 1.2816
+// sigma, so we recover sigma from it and rescale to the chosen service level.
+export const SERVICE_LEVELS = [
+  { value: 0.9, label: "90%", z: 1.2816 },
+  { value: 0.95, label: "95%", z: 1.6449 },
+  { value: 0.99, label: "99%", z: 2.3263 },
+];
+const Z80_HALF = 1.2816;
+
+// Suggested stock for a SKU over the horizon = expected demand + safety stock,
+// safety stock = z(service level) x sigma, sigma from the conformal interval.
+export function recommendation(row, z) {
+  const forecast = Number(row.Forecast || 0);
+  const low = Number(row.ForecastLow);
+  const high = Number(row.ForecastHigh);
+  if (!Number.isFinite(low) || !Number.isFinite(high) || high <= low) {
+    return { order: Math.round(forecast), safety: 0 };
+  }
+  const sigma = (high - low) / (2 * Z80_HALF);
+  const safety = z * sigma;
+  return { order: Math.round(forecast + safety), safety: Math.round(safety) };
+}

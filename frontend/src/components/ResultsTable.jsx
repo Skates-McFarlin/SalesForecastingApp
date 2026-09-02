@@ -1,6 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
 import { fetchSummary } from "../api";
-import { Badge, DeltaBadge, formatNumber, Input, SectionLabel, Select, Spinner } from "./ui";
+import {
+  Badge, DeltaBadge, formatNumber, Input, recommendation, SectionLabel,
+  Select, SERVICE_LEVELS, Spinner,
+} from "./ui";
 
 const BASE_COLUMNS = [
   { key: "ProductName", label: "Product", align: "left" },
@@ -17,32 +20,6 @@ const COMPARISON_COLUMNS = [
 const THIN_HISTORY_MONTHS = 6;
 const MOVER_COUNT = 3;
 const PAGE_SIZE_OPTIONS = [25, 50, 100];
-
-// z-multipliers for common service levels (inverse normal CDF). The upper
-// half-width of the forecast's ~80% conformal interval is 1.2816 sigma, so we
-// recover sigma from the interval and rescale it to the chosen service level.
-const SERVICE_LEVELS = [
-  { value: 0.9, label: "90%", z: 1.2816 },
-  { value: 0.95, label: "95%", z: 1.6449 },
-  { value: 0.99, label: "99%", z: 2.3263 },
-];
-const Z80_HALF = 1.2816;
-
-// Recommended stock to cover the forecast horizon at a service level: expected
-// demand + safety stock, where safety stock = z(service level) * sigma and
-// sigma comes from the conformal interval the models actually calibrated. All
-// client-side, so the service-level control updates it live with no re-run.
-function recommendation(row, z) {
-  const forecast = Number(row.Forecast || 0);
-  const low = Number(row.ForecastLow);
-  const high = Number(row.ForecastHigh);
-  if (!Number.isFinite(low) || !Number.isFinite(high) || high <= low) {
-    return { order: Math.round(forecast), safety: 0 };
-  }
-  const sigma = (high - low) / (2 * Z80_HALF);
-  const safety = z * sigma;
-  return { order: Math.round(forecast + safety), safety: Math.round(safety) };
-}
 
 // "Biggest mover" means largest swing either direction, so this must be an
 // absolute value - a -40% decline is as much a mover as a +40% gain, and a
@@ -91,7 +68,7 @@ function exportCsv(rows, service) {
   URL.revokeObjectURL(url);
 }
 
-export default function ResultsTable({ rows }) {
+export default function ResultsTable({ rows, service, setService }) {
   const [query, setQuery] = useState("");
   const [category, setCategory] = useState("all");
   // null = use the computed default for this dataset; a real value once the
@@ -101,7 +78,6 @@ export default function ResultsTable({ rows }) {
   const [pageSize, setPageSize] = useState(PAGE_SIZE_OPTIONS[1]);
   const [expanded, setExpanded] = useState(null);
   const [summaries, setSummaries] = useState({});
-  const [service, setService] = useState(SERVICE_LEVELS[1]); // 95% default
 
   useEffect(() => {
     setSort(null);
@@ -241,24 +217,6 @@ export default function ResultsTable({ rows }) {
             ))}
           </Select>
         )}
-        <label className="inline-flex items-center gap-1.5 text-xs text-[var(--ink-3)]">
-          <span title="Probability of not stocking out. Higher service = more safety stock.">
-            Service level
-          </span>
-          <Select
-            className="w-auto py-1"
-            value={service.value}
-            onChange={(e) =>
-              setService(SERVICE_LEVELS.find((s) => s.value === Number(e.target.value)))
-            }
-          >
-            {SERVICE_LEVELS.map((s) => (
-              <option key={s.value} value={s.value}>
-                {s.label}
-              </option>
-            ))}
-          </Select>
-        </label>
         <button
           onClick={() => exportCsv(visible, service)}
           className="inline-flex items-center gap-1.5 rounded-lg border border-[var(--line-strong)] px-3 py-2 text-xs font-medium text-[var(--ink-2)] transition-colors hover:bg-[var(--surface-2)] hover:text-[var(--ink)]"
@@ -277,12 +235,15 @@ export default function ResultsTable({ rows }) {
       </div>
 
       {!hasComparison && (
-        <div className="mb-3 rounded-lg border border-[var(--line)] bg-[var(--surface-2)] px-3 py-2.5 text-xs leading-relaxed text-[var(--ink-2)]">
-          <span className="font-medium text-[var(--ink)]">No year-over-year comparison.</span> Your
-          forecast starts beyond the history in this file, so there's no matching prior-year period
-          to compare against. Pick a start date within — or just after — your data's range to see
-          change figures.
-        </div>
+        <p className="mb-2 flex items-center gap-1.5 text-[11px] text-[var(--ink-3)]">
+          <svg className="size-3 shrink-0" viewBox="0 0 14 14" fill="none">
+            <circle cx="7" cy="7" r="5.5" stroke="currentColor" strokeWidth="1.2" />
+            <path d="M7 6.2v3.2" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
+            <circle cx="7" cy="4.4" r="0.6" fill="currentColor" />
+          </svg>
+          No prior-year comparison — the forecast starts beyond this file's history. Start within your
+          data's range to see year-over-year change.
+        </p>
       )}
 
       <div className="min-h-0 flex-1 overflow-auto rounded-xl border border-[var(--line)]">
@@ -443,10 +404,6 @@ function RowGroup({ row, columnCount, showComparison, share, rec, service, isMov
             <div className="mb-3 grid grid-cols-2 gap-px overflow-hidden rounded-lg border border-[var(--line)] bg-[var(--line)] sm:grid-cols-4">
               <MiniStat label="Forecast" value={formatNumber(row.Forecast)} />
               <MiniStat
-                label="Vs last year"
-                value={changeValue === "N/A" ? "—" : <DeltaBadge value={changeValue} />}
-              />
-              <MiniStat
                 label="Confidence range"
                 value={
                   row.ForecastLow != null && row.ForecastHigh != null
@@ -454,20 +411,13 @@ function RowGroup({ row, columnCount, showComparison, share, rec, service, isMov
                     : "—"
                 }
               />
+              <MiniStat
+                label={`Order · ${service.label}`}
+                value={`${formatNumber(rec.order)}`}
+                sub={`+${formatNumber(rec.safety)} safety`}
+                accent
+              />
               <MiniStat label="History" value={<HistoryValue months={row.HistoryMonths} />} />
-            </div>
-
-            <div className="mb-3 rounded-lg border border-accent-500/30 bg-accent-500/5 px-3 py-2.5">
-              <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
-                <SectionLabel>Suggested order · {service.label} service level</SectionLabel>
-                <div className="tnum text-lg font-semibold text-accent-600 dark:text-accent-400">
-                  {formatNumber(rec.order)} units
-                </div>
-              </div>
-              <p className="mt-1 text-[11px] leading-relaxed text-[var(--ink-3)]">
-                {formatNumber(row.Forecast)} forecast + {formatNumber(rec.safety)} safety stock to
-                stay in stock ~{service.label} of the time over this horizon.
-              </p>
             </div>
 
             <PriceWhatIf
@@ -500,11 +450,14 @@ function RowGroup({ row, columnCount, showComparison, share, rec, service, isMov
   );
 }
 
-function MiniStat({ label, value }) {
+function MiniStat({ label, value, sub, accent }) {
   return (
     <div className="bg-[var(--surface)] px-3 py-2">
       <SectionLabel>{label}</SectionLabel>
-      <div className="tnum mt-1 text-sm font-semibold">{value}</div>
+      <div className={`tnum mt-1 text-sm font-semibold ${accent ? "text-accent-600 dark:text-accent-400" : ""}`}>
+        {value}
+      </div>
+      {sub ? <div className="tnum mt-0.5 text-[10px] text-[var(--ink-3)]">{sub}</div> : null}
     </div>
   );
 }

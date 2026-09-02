@@ -5,7 +5,7 @@ import ControlPanel from "./components/ControlPanel";
 import ForecastChart from "./components/ForecastChart";
 import KpiStrip from "./components/KpiStrip";
 import ResultsTable from "./components/ResultsTable";
-import { Card, ErrorNote, SectionLabel } from "./components/ui";
+import { Card, ErrorNote, SectionLabel, Select, SERVICE_LEVELS } from "./components/ui";
 
 const TABS = [
   { id: "forecast", label: "Forecast" },
@@ -27,6 +27,7 @@ export default function App() {
 
   const [forecast, setForecast] = useState(emptyRun);
   const [accuracy, setAccuracy] = useState(emptyRun);
+  const [service, setService] = useState(SERVICE_LEVELS[1]); // 95% default
   const [elapsed, setElapsed] = useState(0);
   const abortRef = useRef(null);
 
@@ -150,11 +151,32 @@ export default function App() {
 
           {!active.busy && active.rows?.length > 0 && tab === "forecast" && (
             <div className="flex min-h-0 flex-col gap-5">
-              <KpiStrip rows={active.rows} />
+              <div className="flex items-center justify-between gap-3">
+                <SectionLabel>Inventory plan</SectionLabel>
+                <label className="inline-flex items-center gap-1.5 text-xs text-[var(--ink-3)]">
+                  <span title="Probability of not stocking out. Higher service level = more safety stock.">
+                    Service level
+                  </span>
+                  <Select
+                    className="w-auto py-1"
+                    value={service.value}
+                    onChange={(e) =>
+                      setService(SERVICE_LEVELS.find((s) => s.value === Number(e.target.value)))
+                    }
+                  >
+                    {SERVICE_LEVELS.map((s) => (
+                      <option key={s.value} value={s.value}>
+                        {s.label}
+                      </option>
+                    ))}
+                  </Select>
+                </label>
+              </div>
+              <KpiStrip rows={active.rows} service={service} />
               <Card className="p-4">
-                <ForecastChart rows={active.rows} />
+                <ForecastChart rows={active.rows} service={service} />
               </Card>
-              <ResultsTable rows={active.rows} />
+              <ResultsTable rows={active.rows} service={service} setService={setService} />
             </div>
           )}
 
