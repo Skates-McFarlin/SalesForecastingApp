@@ -17,14 +17,16 @@ the ensemble and use the borrowed-shape cold-start path.
 import numpy as np
 import pandas as pd
 
-from . import statistical, borrowed_shape, intermittent
+from . import statistical, borrowed_shape, intermittent, chronos_model
 from .base import Forecast, clip_nonneg, mae, monthly_actuals
 from .lightgbm_model import LightGBMForecaster
 
 # A SKU below (horizon + this) months can't learn its own yearly shape; it uses
 # the borrowed-shape cold-start path instead of the ensemble.
 MIN_TRAIN_MONTHS = 12
-ENSEMBLE = ["ets", "theta", "lightgbm"]  # strong models; naive is a fallback only
+# Strong models blended per-SKU by validation skill; "chronos" (zero-shot
+# foundation model) only participates when its model is available.
+ENSEMBLE = ["ets", "theta", "lightgbm", "chronos"]
 ENSEMBLE_NAME = "ensemble"
 THIN = "seasonal-borrowed"
 INTERMITTENT_NAME = "intermittent"
@@ -43,6 +45,7 @@ def run_forecast(
     stat_full = statistical.forecast_all(df_all, group_col, horizon)
     lgbm_full = _lgbm_all(df_all, group_col, products, forecast_start_date, horizon,
                           category_by_group, history_months_by_group)
+    chronos_full = chronos_model.forecast_all(df_all, group_col, products, horizon)
 
     # Validation fold: re-forecast the last `horizon` months of known history to
     # score each model per SKU and set its ensemble weight.
@@ -53,6 +56,7 @@ def run_forecast(
     stat_val = statistical.forecast_all(df_val_train, group_col, horizon) if have_val else {}
     lgbm_val = (_lgbm_all(df_val_train, group_col, products, val_start, horizon,
                           category_by_group, history_months_by_group) if have_val else {})
+    chronos_val = chronos_model.forecast_all(df_val_train, group_col, products, horizon) if have_val else {}
 
     # Intermittent/lumpy detection among mature SKUs; forecast those with
     # Croston/TSB (full + validation) to add as a weighted specialist member.
@@ -68,10 +72,6 @@ def run_forecast(
         df_val_train[df_val_train[group_col].isin(intermittent_skus)], group_col, horizon)
         if intermittent_skus and have_val else {})
 
-    def stat_member(mid, store, g):
-        fc = store.get(mid, {}).get(g)
-        return fc.yhat if fc is not None else None
-
     results = {}
     for g in products:
         n = history_months_by_group.get(g, 0)
@@ -82,14 +82,28 @@ def run_forecast(
             continue
 
         # Assemble members: name -> (full Forecast, validation yhat or None).
+        def full_of(mid):
+            if mid == "lightgbm":
+                return lgbm_full.get(g)
+            if mid == "chronos":
+                return chronos_full.get(g)
+            return stat_full.get(mid, {}).get(g)
+
+        def val_of(mid):
+            if mid == "lightgbm":
+                fc = lgbm_val.get(g)
+            elif mid == "chronos":
+                fc = chronos_val.get(g)
+            else:
+                fc = stat_val.get(mid, {}).get(g)
+            return fc.yhat if fc is not None else None
+
         members = {}
         for mid in ENSEMBLE:
-            full = lgbm_full.get(g) if mid == "lightgbm" else stat_full.get(mid, {}).get(g)
+            full = full_of(mid)
             if full is None:
                 continue
-            valy = (lgbm_val.get(g).yhat if mid == "lightgbm" and lgbm_val.get(g) is not None
-                    else stat_member(mid, stat_val, g))
-            members[mid] = (full, valy)
+            members[mid] = (full, val_of(mid))
 
         label = ENSEMBLE_NAME
         if interm_full.get(g) is not None:

@@ -265,7 +265,11 @@ def _load_model():
         model_status["error"] = str(exc)
 
 
-threading.Thread(target=_load_model, daemon=True).start()
+# Bootstrap the LLM in the background unless explicitly skipped (tests /
+# forecast-only usage that don't need summaries). Skipping avoids downloading
+# and spawning llama-server.
+if os.getenv("INSIGHTA_SKIP_LLM") != "1":
+    threading.Thread(target=_load_model, daemon=True).start()
 
 
 def _chat(messages, max_tokens, temperature=0.0, top_p=1.0):
