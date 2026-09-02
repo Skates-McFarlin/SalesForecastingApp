@@ -64,6 +64,28 @@ NAMES = {
 CAT_PREFIX = {"Winter Apparel": "WIN", "Summer Outdoor": "SUM", "Back to School": "SCH",
               "Holiday Decor": "HOL", "Everyday Staples": "STP", "Fitness": "FIT", "Electronics": "ELC"}
 
+# Ground-truth price elasticity of demand per category (%dQ / %dP, negative).
+# Staples are inelastic; discretionary/competitive goods are elastic. The
+# generator applies Q *= (price/base_price)^E, so a promo (lower price) lifts
+# demand; the estimator should recover these.
+ELASTICITY = {
+    "Everyday Staples": -0.3, "Back to School": -0.8, "Holiday Decor": -1.2,
+    "Winter Apparel": -1.5, "Summer Outdoor": -1.5, "Fitness": -1.8, "Electronics": -2.2,
+}
+
+
+def price_series(base_price):
+    """Monthly prices: mostly the base list price, with a few promo months per
+    year (discounted 10-30%) and small noise - the variation the elasticity
+    estimator needs."""
+    n = len(DATES)
+    prices = np.full(n, base_price, dtype=float)
+    n_promo = int(RNG.integers(2, 5)) * (n // 12)
+    for m in RNG.choice(n, size=min(n_promo, n), replace=False):
+        prices[m] = base_price * RNG.uniform(0.7, 0.9)
+    prices *= (1 + RNG.normal(0, 0.02, n))
+    return np.round(np.maximum(prices, 0.01), 2)
+
 
 def month_index(d):
     return list(DATES).index(d)
@@ -80,11 +102,12 @@ def base_series(shape, level, trend=0.0, noise=0.12):
     return np.array(out)
 
 
-def make_sku(sku, name, cat, price, pattern, values):
-    row = {"Product ID (SKU)": sku, "Product Name": name, "Category": cat, "Unit Price": price}
-    for d, v in zip(DATES, values):
+def make_sku(sku, name, cat, prices, pattern, values, elasticity):
+    row = {"Product ID (SKU)": sku, "Product Name": name, "Category": cat}
+    for d, v, p in zip(DATES, values, prices):
         row["Quantity Sold " + d.strftime("%b %Y")] = int(round(max(0, v)))
-    return row, {"sku": sku, "pattern": pattern, "category": cat}
+        row["Unit Price " + d.strftime("%b %Y")] = round(float(p), 2)
+    return row, {"sku": sku, "pattern": pattern, "category": cat, "elasticity": round(elasticity, 3)}
 
 
 def build():
@@ -95,12 +118,15 @@ def build():
         counter[cat] += 1
         return f"{CAT_PREFIX[cat]}-{1000 + counter[cat]}"
 
-    def add(cat, name_price, pattern, values):
-        name, price = name_price
+    def add(cat, name_price, pattern, base_values, elastic=True):
+        name, base_price = name_price
         sku = next_sku(cat)
-        # vary price a little per SKU
-        price = round(price * (0.9 + 0.2 * RNG.random()), 2)
-        r, t = make_sku(sku, name, cat, price, pattern, values)
+        base_price = round(base_price * (0.9 + 0.2 * RNG.random()), 2)
+        prices = price_series(base_price)
+        E = ELASTICITY[cat] if elastic else 0.0
+        # Demand responds to price: promo months (lower price) lift demand.
+        values = np.asarray(base_values, dtype=float) * (prices / base_price) ** E
+        r, t = make_sku(sku, name, cat, prices, pattern, values, E)
         rows.append(r); truth.append(t)
 
     for cat, shape in CATEGORY_SHAPE.items():
@@ -124,7 +150,7 @@ def build():
         for k in range(len(DATES)):
             if RNG.random() < 0.22:
                 base[k] = RNG.integers(3, 15)
-        add(cat, ("Replacement Part Kit", 25), "intermittent", base)
+        add(cat, ("Replacement Part Kit", 25), "intermittent", base, elastic=False)
 
     # Lumpy SKUs (sparse + highly variable size)
     for i in range(6):
@@ -133,7 +159,7 @@ def build():
         for k in range(len(DATES)):
             if RNG.random() < 0.30:
                 base[k] = RNG.integers(1, 60)  # wildly variable
-        add(cat, ("Bulk Special Order", 40), "lumpy", base)
+        add(cat, ("Bulk Special Order", 40), "lumpy", base, elastic=False)
 
     # Stockout gaps: smooth series with an interior zero run
     for i in range(6):

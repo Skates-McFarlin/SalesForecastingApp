@@ -16,7 +16,7 @@ import numpy as np
 from app.models.prediction import Prediction
 from app.models.file import File
 from app.extensions import db
-from app.forecasting import selector
+from app.forecasting import selector, elasticity as elasticity_mod
 from app.forecasting.base import aggregate_interval, future_index, monthly_actuals
 from huggingface_hub import hf_hub_download
 import os
@@ -771,6 +771,12 @@ def predict_sales_forecasting(data, start_date, duration):
     )
     end_date = future_index(forecast_start_date, forecast_periods).max() + pd.offsets.MonthEnd(0)
 
+    # Price elasticity per SKU (only when the file carries monthly prices);
+    # powers the "what-if a price change" figure client-side.
+    elasticity_by_group = elasticity_mod.estimate_all(
+        df, group_col, list(products), category_by_group
+    )
+
     # Prepare forecast results storage
     forecast_results = []
 
@@ -870,6 +876,12 @@ def predict_sales_forecasting(data, start_date, duration):
                 "HasDataGap": has_data_gap,
                 "ForecastMethod": method_by_group.get(group_key),
                 "ForecastModel": model_label,
+                "Elasticity": (
+                    round(elasticity_by_group.get(group_key, (None, None))[0], 2)
+                    if elasticity_by_group.get(group_key, (None, None))[0] is not None
+                    else None
+                ),
+                "ElasticitySource": elasticity_by_group.get(group_key, (None, None))[1],
             }
         )
 
@@ -1046,13 +1058,20 @@ def preprocess_data(data):
         if match:
             years.add(int(match.group(1)))
 
+    # Optional monthly unit-price columns ("Unit Price Jan 2016") parallel to
+    # the quantity columns - the time-varying price the elasticity estimator
+    # needs. Kept out of extra_columns so 60 price columns don't pollute the
+    # per-SKU context.
+    price_columns = [h for h in headers if re.match(r"Unit Price \w+ \d{4}", h)]
+
     has_sku_column = SKU_COLUMN in headers
-    # Any column that isn't the name, the SKU, or a dated quantity column is
-    # per-SKU context the file happens to provide (today just Category, but
-    # written generically - a future file with a price or rating column
-    # flows through here with no further code changes).
+    # Any column that isn't the name, the SKU, or a dated quantity/price column
+    # is per-SKU context the file happens to provide (Category, a static list
+    # price, a rating, ...) - flows through generically with no code changes.
     extra_columns = [
-        h for h in headers if h not in sales_columns and h not in ("Product Name", SKU_COLUMN)
+        h for h in headers
+        if h not in sales_columns and h not in price_columns
+        and h not in ("Product Name", SKU_COLUMN)
     ]
 
     # Dictionary to store aggregated sales
@@ -1093,6 +1112,14 @@ def preprocess_data(data):
                         "%Y-%m-%d"
                     )
 
+                    price_col = f"Unit Price {month_name}"
+                    price = None
+                    if price_col in row:
+                        try:
+                            price = float(row[price_col])
+                        except (TypeError, ValueError):
+                            price = None
+
                     # **Aggregate Sales for Each Product/SKU and Date**
                     key = (group_key, date_str)
                     if key in aggregated_data:
@@ -1103,6 +1130,7 @@ def preprocess_data(data):
                             "y": quantity_sold,
                             "product_name": product_name,
                             "sku": sku,
+                            "price": price,
                         }
 
     # Convert aggregated data dictionary to a list

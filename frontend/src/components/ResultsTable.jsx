@@ -470,6 +470,12 @@ function RowGroup({ row, columnCount, showComparison, share, rec, service, isMov
               </p>
             </div>
 
+            <PriceWhatIf
+              elasticity={row.Elasticity}
+              source={row.ElasticitySource}
+              forecast={Number(row.Forecast || 0)}
+            />
+
             <ForecastBasis method={row.ForecastMethod} model={row.ForecastModel} />
 
             <SectionLabel className="mb-2">AI analysis</SectionLabel>
@@ -542,6 +548,55 @@ function ForecastBasis({ method, model }) {
         <circle cx="7" cy="4.4" r="0.6" fill="currentColor" />
       </svg>
       {text}
+    </div>
+  );
+}
+
+const PRICE_DELTAS = [-0.2, -0.1, 0.1, 0.2];
+
+// Live "what-if a price change" using the SKU's estimated price elasticity:
+// %change in demand = elasticity x %change in price. Client-side, so the
+// projection updates instantly as the user tries different price moves.
+function PriceWhatIf({ elasticity, source, forecast }) {
+  const [delta, setDelta] = useState(-0.1);
+  if (elasticity == null) return null;
+  const demandChange = elasticity * delta; // fraction
+  const projected = Math.max(0, Math.round(forecast * (1 + demandChange)));
+  const strength = Math.abs(elasticity) >= 1 ? "elastic" : "inelastic";
+  const pct = (x) => `${x > 0 ? "+" : ""}${(x * 100).toFixed(0)}%`;
+  return (
+    <div className="mb-3 rounded-lg border border-[var(--line)] bg-[var(--surface-2)] px-3 py-2.5">
+      <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
+        <SectionLabel>
+          Price sensitivity{source && source !== "own" ? ` · ${source} estimate` : ""}
+        </SectionLabel>
+        <span className="tnum text-[11px] text-[var(--ink-3)]">
+          elasticity {elasticity} ({strength})
+        </span>
+      </div>
+      <div className="mt-1.5 flex flex-wrap items-center gap-1.5 text-sm">
+        <span className="text-[var(--ink-2)]">If price</span>
+        <select
+          value={delta}
+          onChange={(e) => setDelta(Number(e.target.value))}
+          className="rounded-md border border-[var(--line-strong)] bg-[var(--surface)] px-1.5 py-0.5 text-sm"
+        >
+          {PRICE_DELTAS.map((d) => (
+            <option key={d} value={d}>
+              {pct(d)}
+            </option>
+          ))}
+        </select>
+        <span className="text-[var(--ink-2)]">→ demand</span>
+        <span
+          className={`tnum font-medium ${
+            demandChange > 0 ? "text-pos-500 dark:text-pos-400" : "text-neg-500 dark:text-neg-400"
+          }`}
+        >
+          {pct(demandChange)}
+        </span>
+        <span className="tnum text-[var(--ink-3)]">≈ {formatNumber(projected)} units</span>
+      </div>
     </div>
   );
 }
