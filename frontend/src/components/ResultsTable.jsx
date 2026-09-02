@@ -420,6 +420,16 @@ function RowGroup({ row, columnCount, showComparison, share, rec, service, isMov
               <MiniStat label="History" value={<HistoryValue months={row.HistoryMonths} />} />
             </div>
 
+            <p className="mb-3 text-xs leading-relaxed text-[var(--ink-3)]">
+              Ordering just the{" "}
+              <span className="font-medium text-[var(--ink-2)]">{formatNumber(row.Forecast)}</span>{" "}
+              forecast would sell out about half the time, since demand lands above the forecast as
+              often as below. To stay in stock ~{service.label} of the time, add a{" "}
+              <span className="font-medium text-[var(--ink-2)]">{formatNumber(rec.safety)}</span>-unit
+              safety buffer — a suggested order of{" "}
+              <span className="font-medium text-accent-600 dark:text-accent-400">{formatNumber(rec.order)}</span>.
+            </p>
+
             <PriceWhatIf
               elasticity={row.Elasticity}
               source={row.ElasticitySource}

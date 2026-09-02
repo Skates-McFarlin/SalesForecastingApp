@@ -30,16 +30,33 @@ def future_index(start_date, horizon):
     return pd.date_range(start=start_date, periods=horizon, freq="MS")
 
 
+# Assumed correlation between a SKU's month-to-month forecast errors. Pure
+# quadrature (rho=0) treats the 12 months as independent, which badly
+# understates the band on an ANNUAL total: a real forecast that's off is usually
+# off the same direction all year (a level/trend/seasonality miss persists), not
+# independently each month. Measured on a proper out-of-sample backtest (train
+# on history, score the truly-unseen next year), the per-month bands were a
+# well-calibrated ~80% but rho=0 covered only ~46% of the annual total; a modest
+# rho lands the well-forecast SKUs back near their stated ~80% (0.3 -> ensemble
+# ~83%) without inflating the band the way rho=1 (linear sum) would. This is the
+# knob that makes a service-level order honest. Var(sum) = rho*(sum sigma)^2 +
+# (1-rho)*sum(sigma^2), interpolating linear sum (rho=1) and quadrature (rho=0).
+ERROR_CORRELATION = 0.3
+
+
 def aggregate_interval(forecast: Forecast, interval_width=DEFAULT_INTERVAL_WIDTH):
-    """Confidence band for the SUMMED forecast, combining monthly spreads in
-    quadrature rather than adding them (which assumes every month hits its
-    extreme together and produces absurd ranges). Same reasoning as the old
-    _aggregate_interval, decoupled from Prophet's model object."""
+    """Confidence band for the SUMMED forecast. Combines the monthly spreads
+    accounting for cross-month error correlation (see ERROR_CORRELATION) - pure
+    quadrature assumes independent months and makes the annual band far too
+    narrow; a plain linear sum assumes every month misses together and makes it
+    too wide. The truth is in between."""
     total = forecast.total
     try:
         z = norm.ppf(0.5 + interval_width / 2)
         sigmas = (np.asarray(forecast.high) - np.asarray(forecast.low)) / (2 * z)
-        spread = z * float(np.sqrt(np.sum(sigmas ** 2)))
+        rho = ERROR_CORRELATION
+        var = rho * float(np.sum(sigmas)) ** 2 + (1 - rho) * float(np.sum(sigmas ** 2))
+        spread = z * float(np.sqrt(var))
     except Exception:  # noqa: BLE001 - fall back to the raw summed bounds
         return float(np.sum(forecast.low)), float(np.sum(forecast.high))
     return max(0.0, total - spread), total + spread
