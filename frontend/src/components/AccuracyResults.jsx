@@ -66,11 +66,11 @@ export default function AccuracyResults({ rows }) {
             </tr>
           </thead>
           <tbody>
-            {visible.map((row) => {
+            {visible.map((row, i) => {
               const mape = parseMape(row);
               return (
                 <tr
-                  key={row.ProductName}
+                  key={row.Sku || `${row.ProductName}-${i}`}
                   className="border-b border-[var(--line)] hover:bg-[var(--surface-2)]"
                 >
                   <td className="px-3 py-2.5 font-medium">{row.ProductName}</td>

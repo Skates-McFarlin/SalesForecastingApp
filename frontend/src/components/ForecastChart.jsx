@@ -37,7 +37,7 @@ export default function ForecastChart({ rows, service }) {
         <span className="text-xs text-[var(--ink-3)]">Top {Math.min(TOP_N, data.length)} by order</span>
       </div>
 
-      <div className="h-56 w-full">
+      <div className="h-72 w-full">
         <ResponsiveContainer width="100%" height="100%">
           <BarChart data={data} margin={{ top: 4, right: 4, bottom: 4, left: 4 }}>
             <CartesianGrid vertical={false} stroke="var(--line)" />
@@ -47,10 +47,11 @@ export default function ForecastChart({ rows, service }) {
               tickLine={false}
               axisLine={{ stroke: "var(--line)" }}
               interval={0}
-              height={48}
-              angle={-32}
+              height={96}
+              angle={-35}
               textAnchor="end"
-              tickFormatter={(v) => (v.length > 14 ? `${v.slice(0, 13)}…` : v)}
+              tickMargin={6}
+              tickFormatter={(v) => (v.length > 22 ? `${v.slice(0, 21)}…` : v)}
             />
             <YAxis
               tick={{ fontSize: 11, fill: "var(--ink-3)" }}
