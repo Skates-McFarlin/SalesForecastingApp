@@ -12,3 +12,9 @@ electron/dist-electron/
 # Generated from frontend/ by `npm run build:frontend` (wired into predist).
 electron/build/
 frontend/node_modules/
+
+# Secrets and local tooling config - never commit
+.env
+*.env
+backend/.env
+.claude/
