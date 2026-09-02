@@ -505,7 +505,7 @@ function ForecastBasis({ method, model }) {
   );
 }
 
-const PRICE_DELTAS = [-0.2, -0.1, 0.1, 0.2];
+const PRICE_DELTAS = [-0.1, 0.1, 0.15, 0.2, 0.3];
 
 // Live "what-if a price change" using the SKU's estimated price elasticity:
 // %change in demand = elasticity x %change in price. Client-side, so the
