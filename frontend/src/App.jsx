@@ -1,5 +1,6 @@
-import { useEffect, useRef, useState } from "react";
-import { fetchErrorMetrics, generateForecast } from "./api";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { fetchErrorMetrics, generateForecast, inspectFile } from "./api";
+import { cmp, dateBounds, monthRangeForYear } from "./dates";
 import AccuracyResults from "./components/AccuracyResults";
 import ControlPanel from "./components/ControlPanel";
 import ForecastChart from "./components/ForecastChart";
@@ -28,6 +29,7 @@ export default function App() {
   const [forecast, setForecast] = useState(emptyRun);
   const [accuracy, setAccuracy] = useState(emptyRun);
   const [service, setService] = useState(SERVICE_LEVELS[1]); // 95% default
+  const [dataRange, setDataRange] = useState(null); // detected file coverage
   const [elapsed, setElapsed] = useState(0);
   const abortRef = useRef(null);
 
@@ -38,6 +40,37 @@ export default function App() {
 
   const active = tab === "forecast" ? forecast : accuracy;
   const setActive = tab === "forecast" ? setForecast : setAccuracy;
+
+  // Start-date window derived from the uploaded file (past for backtesting,
+  // forward for forecasting). Falls back to a default range before a file lands.
+  const bounds = useMemo(() => dateBounds(dataRange, tab), [dataRange, tab]);
+
+  // A freshly detected file snaps the start date to a sensible default.
+  useEffect(() => {
+    if (!dataRange) return;
+    const { def } = dateBounds(dataRange, tab);
+    setYear(def.y);
+    setMonth(def.m);
+    // Only when the file changes, not on every tab flip.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dataRange]);
+
+  // Keep the selection inside what the active tab allows (e.g. after switching
+  // to Accuracy, a future forecast start snaps back into the data).
+  useEffect(() => {
+    const cur = { y: year, m: month };
+    if (cmp(cur, bounds.min) < 0 || cmp(cur, bounds.max) > 0) {
+      setYear(bounds.def.y);
+      setMonth(bounds.def.m);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab]);
+
+  const changeYear = (y) => {
+    const { lo, hi } = monthRangeForYear(bounds, y);
+    setYear(y);
+    setMonth((m) => Math.min(Math.max(m, lo), hi));
+  };
 
   useEffect(() => {
     if (!active.busy) return;
@@ -110,12 +143,15 @@ export default function App() {
             onFile={(f) => {
               setFile(f);
               setActive({ ...active, error: null });
+              setDataRange(null);
+              inspectFile(f).then((r) => r && setDataRange(r));
             }}
             onReject={(message) => setActive({ ...active, error: message })}
             year={year}
             month={month}
             duration={duration}
-            onYear={setYear}
+            bounds={bounds}
+            onYear={changeYear}
             onMonth={setMonth}
             onDuration={setDuration}
             onSubmit={run}

@@ -48,6 +48,24 @@ export async function fetchErrorMetrics(file, startDate, duration, { signal } = 
   );
 }
 
+// Peek at a file's month coverage so the date pickers can reflect real data.
+// Best-effort: on any failure we return null and the UI keeps its defaults.
+export async function inspectFile(file, { signal } = {}) {
+  try {
+    const form = new FormData();
+    form.append("file", file);
+    const res = await fetch(`${BASE}/api/predictions/inspect`, {
+      method: "POST",
+      body: form,
+      signal,
+    });
+    const body = await res.json();
+    return body?.range ?? null;
+  } catch {
+    return null;
+  }
+}
+
 export async function fetchSummary(predictionId) {
   const body = await asJson(await fetch(`${BASE}/api/predictions/${predictionId}/summary`));
   return body.Summary;

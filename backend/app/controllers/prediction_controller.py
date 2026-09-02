@@ -1042,6 +1042,35 @@ def _read_rows(data):
 SKU_COLUMN = "Product ID (SKU)"
 
 
+def inspect_data(data):
+    """Cheap first pass over an upload: just the span of dated sales columns.
+
+    Lets the UI build start-date pickers from the file's real coverage instead
+    of guessing a year range - so the Accuracy tab can only pick months that
+    actually exist to backtest against, and the Forecast tab knows where history
+    ends. Returns {min_year, min_month, max_year, max_month} or None if the file
+    has no recognisable "Quantity Sold {Mon} {Year}" columns.
+    """
+    _, headers = _read_rows(data)
+    months = []
+    for header in headers:
+        m = re.match(r"Quantity Sold (\w+) (\d{4})", header)
+        if not m:
+            continue
+        try:
+            dt = datetime.strptime(f"{m.group(1)} {m.group(2)}", "%b %Y")
+        except ValueError:
+            continue
+        months.append((dt.year, dt.month))
+    if not months:
+        return None
+    lo, hi = min(months), max(months)
+    return {
+        "min_year": lo[0], "min_month": lo[1],
+        "max_year": hi[0], "max_month": hi[1],
+    }
+
+
 def preprocess_data(data):
     json_data = []
     rows, headers = _read_rows(data)

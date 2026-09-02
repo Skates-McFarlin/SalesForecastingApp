@@ -1,4 +1,5 @@
 import FileDrop from "./FileDrop";
+import { monthRangeForYear } from "../dates";
 import { Button, Field, Select, SectionLabel, Spinner } from "./ui";
 
 const MONTHS = [
@@ -8,11 +9,6 @@ const MONTHS = [
 
 const DURATIONS = [3, 6, 12, 18, 24];
 
-// Forecasts run forward from now, so the picker starts at the current year
-// rather than including years already behind us.
-const CURRENT_YEAR = new Date().getFullYear();
-const YEARS = Array.from({ length: 10 }, (_, i) => CURRENT_YEAR + i);
-
 export default function ControlPanel({
   file,
   onFile,
@@ -20,6 +16,7 @@ export default function ControlPanel({
   year,
   month,
   duration,
+  bounds,
   onYear,
   onMonth,
   onDuration,
@@ -30,6 +27,10 @@ export default function ControlPanel({
   submitLabel,
   busyLabel,
 }) {
+  // The selectable start-date window comes from the uploaded file's coverage.
+  const years = [];
+  for (let y = bounds.min.y; y <= bounds.max.y; y++) years.push(y);
+  const { lo, hi } = monthRangeForYear(bounds, year);
   return (
     <div className="flex h-full flex-col gap-5 overflow-y-auto p-5">
       <div>
@@ -41,7 +42,7 @@ export default function ControlPanel({
         <Field label="Start month">
           <Select value={month} onChange={(e) => onMonth(Number(e.target.value))} disabled={busy}>
             {MONTHS.map((name, i) => (
-              <option key={name} value={i + 1}>
+              <option key={name} value={i + 1} disabled={i + 1 < lo || i + 1 > hi}>
                 {name}
               </option>
             ))}
@@ -49,7 +50,7 @@ export default function ControlPanel({
         </Field>
         <Field label="Year">
           <Select value={year} onChange={(e) => onYear(Number(e.target.value))} disabled={busy}>
-            {YEARS.map((y) => (
+            {years.map((y) => (
               <option key={y} value={y}>
                 {y}
               </option>
