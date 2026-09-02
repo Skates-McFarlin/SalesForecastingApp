@@ -5,6 +5,7 @@ import { Badge, DeltaBadge, formatNumber, Input, SectionLabel, Select, Spinner }
 const BASE_COLUMNS = [
   { key: "ProductName", label: "Product", align: "left" },
   { key: "Forecast", label: "Forecast", align: "right" },
+  { key: "__order", label: "Suggested order", align: "right" },
   { key: "__share", label: "Share", align: "right" },
 ];
 
@@ -17,6 +18,32 @@ const THIN_HISTORY_MONTHS = 6;
 const MOVER_COUNT = 3;
 const PAGE_SIZE_OPTIONS = [25, 50, 100];
 
+// z-multipliers for common service levels (inverse normal CDF). The upper
+// half-width of the forecast's ~80% conformal interval is 1.2816 sigma, so we
+// recover sigma from the interval and rescale it to the chosen service level.
+const SERVICE_LEVELS = [
+  { value: 0.9, label: "90%", z: 1.2816 },
+  { value: 0.95, label: "95%", z: 1.6449 },
+  { value: 0.99, label: "99%", z: 2.3263 },
+];
+const Z80_HALF = 1.2816;
+
+// Recommended stock to cover the forecast horizon at a service level: expected
+// demand + safety stock, where safety stock = z(service level) * sigma and
+// sigma comes from the conformal interval the models actually calibrated. All
+// client-side, so the service-level control updates it live with no re-run.
+function recommendation(row, z) {
+  const forecast = Number(row.Forecast || 0);
+  const low = Number(row.ForecastLow);
+  const high = Number(row.ForecastHigh);
+  if (!Number.isFinite(low) || !Number.isFinite(high) || high <= low) {
+    return { order: Math.round(forecast), safety: 0 };
+  }
+  const sigma = (high - low) / (2 * Z80_HALF);
+  const safety = z * sigma;
+  return { order: Math.round(forecast + safety), safety: Math.round(safety) };
+}
+
 // "Biggest mover" means largest swing either direction, so this must be an
 // absolute value - a -40% decline is as much a mover as a +40% gain, and a
 // signed sort would silently rank every decline below every gain.
@@ -27,15 +54,17 @@ function csvCell(value) {
   return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
 }
 
-function exportCsv(rows) {
+function exportCsv(rows, service) {
   const headers = [
     "Product", "SKU", "Category", "History (mo)", "Forecast",
+    `Suggested order (${service.label})`, `Safety stock (${service.label})`,
     "Share of total", "Last year", "Change",
   ];
   const total = rows.reduce((sum, r) => sum + Number(r.Forecast || 0), 0);
   const lines = [headers.map(csvCell).join(",")];
   for (const r of rows) {
     const share = total > 0 ? ((Number(r.Forecast || 0) / total) * 100).toFixed(1) + "%" : "";
+    const rec = recommendation(r, service.z);
     lines.push(
       [
         r.ProductName,
@@ -43,6 +72,8 @@ function exportCsv(rows) {
         r.Category || "",
         r.HistoryMonths ?? "",
         r.Forecast,
+        rec.order,
+        rec.safety,
         share,
         r["Last Year Actual Sales"],
         r["% Change from Previous Year"] === "N/A" ? "N/A" : `${r["% Change from Previous Year"]}%`,
@@ -70,6 +101,7 @@ export default function ResultsTable({ rows }) {
   const [pageSize, setPageSize] = useState(PAGE_SIZE_OPTIONS[1]);
   const [expanded, setExpanded] = useState(null);
   const [summaries, setSummaries] = useState({});
+  const [service, setService] = useState(SERVICE_LEVELS[1]); // 95% default
 
   useEffect(() => {
     setSort(null);
@@ -123,6 +155,9 @@ export default function ResultsTable({ rows }) {
       if (key === "__share") {
         return totalForecast > 0 ? Number(row.Forecast || 0) / totalForecast : 0;
       }
+      if (key === "__order") {
+        return recommendation(row, service.z).order;
+      }
       return row[key];
     };
     return [...filtered].sort((a, b) => {
@@ -136,7 +171,7 @@ export default function ResultsTable({ rows }) {
       else cmp = Number.isNaN(an) ? 1 : -1; // push N/A to the bottom either way
       return dir === "asc" ? cmp : -cmp;
     });
-  }, [rows, query, category, effectiveSort, totalForecast]);
+  }, [rows, query, category, effectiveSort, totalForecast, service]);
 
   // Search/sort/filter reach every row regardless of page - only what's
   // rendered changes. Re-clamp whenever the filtered set or page size shifts
@@ -206,8 +241,26 @@ export default function ResultsTable({ rows }) {
             ))}
           </Select>
         )}
+        <label className="inline-flex items-center gap-1.5 text-xs text-[var(--ink-3)]">
+          <span title="Probability of not stocking out. Higher service = more safety stock.">
+            Service level
+          </span>
+          <Select
+            className="w-auto py-1"
+            value={service.value}
+            onChange={(e) =>
+              setService(SERVICE_LEVELS.find((s) => s.value === Number(e.target.value)))
+            }
+          >
+            {SERVICE_LEVELS.map((s) => (
+              <option key={s.value} value={s.value}>
+                {s.label}
+              </option>
+            ))}
+          </Select>
+        </label>
         <button
-          onClick={() => exportCsv(visible)}
+          onClick={() => exportCsv(visible, service)}
           className="inline-flex items-center gap-1.5 rounded-lg border border-[var(--line-strong)] px-3 py-2 text-xs font-medium text-[var(--ink-2)] transition-colors hover:bg-[var(--surface-2)] hover:text-[var(--ink)]"
         >
           <svg className="size-3.5" viewBox="0 0 14 14" fill="none">
@@ -265,6 +318,8 @@ export default function ResultsTable({ rows }) {
                 columnCount={columns.length}
                 showComparison={hasComparison}
                 share={totalForecast > 0 ? (Number(row.Forecast || 0) / totalForecast) * 100 : 0}
+                rec={recommendation(row, service.z)}
+                service={service}
                 isMover={moverIds.has(row.PredictionId)}
                 isOpen={expanded === row.PredictionId}
                 summary={summaries[row.PredictionId]}
@@ -328,7 +383,7 @@ export default function ResultsTable({ rows }) {
 }
 
 /* Rendered as sibling <tr>s so an expanded summary spans the full width. */
-function RowGroup({ row, columnCount, showComparison, share, isMover, isOpen, summary, onToggle }) {
+function RowGroup({ row, columnCount, showComparison, share, rec, service, isMover, isOpen, summary, onToggle }) {
   const changeValue = row["% Change from Previous Year"];
   const unitDelta =
     changeValue !== "N/A" ? Number(row.Forecast) - Number(row["Last Year Actual Sales"]) : null;
@@ -360,6 +415,9 @@ function RowGroup({ row, columnCount, showComparison, share, isMover, isOpen, su
           </div>
         </td>
         <td className="tnum px-3 py-2.5 text-right font-medium">{formatNumber(row.Forecast)}</td>
+        <td className="tnum px-3 py-2.5 text-right font-semibold text-accent-600 dark:text-accent-400">
+          {formatNumber(rec.order)}
+        </td>
         <td className="tnum px-3 py-2.5 text-right text-[var(--ink-2)]">{share.toFixed(1)}%</td>
         {showComparison && (
           <>
@@ -397,6 +455,19 @@ function RowGroup({ row, columnCount, showComparison, share, isMover, isOpen, su
                 }
               />
               <MiniStat label="History" value={<HistoryValue months={row.HistoryMonths} />} />
+            </div>
+
+            <div className="mb-3 rounded-lg border border-accent-500/30 bg-accent-500/5 px-3 py-2.5">
+              <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
+                <SectionLabel>Suggested order · {service.label} service level</SectionLabel>
+                <div className="tnum text-lg font-semibold text-accent-600 dark:text-accent-400">
+                  {formatNumber(rec.order)} units
+                </div>
+              </div>
+              <p className="mt-1 text-[11px] leading-relaxed text-[var(--ink-3)]">
+                {formatNumber(row.Forecast)} forecast + {formatNumber(rec.safety)} safety stock to
+                stay in stock ~{service.label} of the time over this horizon.
+              </p>
             </div>
 
             <ForecastBasis method={row.ForecastMethod} model={row.ForecastModel} />
