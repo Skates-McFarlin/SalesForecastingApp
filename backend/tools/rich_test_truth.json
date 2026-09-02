@@ -1,0 +1,458 @@
+[
+  {
+    "sku": "WIN-1001",
+    "pattern": "smooth_seasonal",
+    "category": "Winter Apparel",
+    "elasticity": -1.5
+  },
+  {
+    "sku": "WIN-1002",
+    "pattern": "smooth_seasonal",
+    "category": "Winter Apparel",
+    "elasticity": -1.5
+  },
+  {
+    "sku": "WIN-1003",
+    "pattern": "smooth_seasonal",
+    "category": "Winter Apparel",
+    "elasticity": -1.5
+  },
+  {
+    "sku": "WIN-1004",
+    "pattern": "trending_up",
+    "category": "Winter Apparel",
+    "elasticity": -1.5
+  },
+  {
+    "sku": "WIN-1005",
+    "pattern": "trending_down",
+    "category": "Winter Apparel",
+    "elasticity": -1.5
+  },
+  {
+    "sku": "WIN-1006",
+    "pattern": "thin_coldstart",
+    "category": "Winter Apparel",
+    "elasticity": -1.5
+  },
+  {
+    "sku": "SUM-1001",
+    "pattern": "smooth_seasonal",
+    "category": "Summer Outdoor",
+    "elasticity": -1.5
+  },
+  {
+    "sku": "SUM-1002",
+    "pattern": "smooth_seasonal",
+    "category": "Summer Outdoor",
+    "elasticity": -1.5
+  },
+  {
+    "sku": "SUM-1003",
+    "pattern": "smooth_seasonal",
+    "category": "Summer Outdoor",
+    "elasticity": -1.5
+  },
+  {
+    "sku": "SUM-1004",
+    "pattern": "trending_up",
+    "category": "Summer Outdoor",
+    "elasticity": -1.5
+  },
+  {
+    "sku": "SUM-1005",
+    "pattern": "trending_down",
+    "category": "Summer Outdoor",
+    "elasticity": -1.5
+  },
+  {
+    "sku": "SUM-1006",
+    "pattern": "thin_coldstart",
+    "category": "Summer Outdoor",
+    "elasticity": -1.5
+  },
+  {
+    "sku": "SCH-1001",
+    "pattern": "smooth_seasonal",
+    "category": "Back to School",
+    "elasticity": -0.8
+  },
+  {
+    "sku": "SCH-1002",
+    "pattern": "smooth_seasonal",
+    "category": "Back to School",
+    "elasticity": -0.8
+  },
+  {
+    "sku": "SCH-1003",
+    "pattern": "smooth_seasonal",
+    "category": "Back to School",
+    "elasticity": -0.8
+  },
+  {
+    "sku": "SCH-1004",
+    "pattern": "trending_up",
+    "category": "Back to School",
+    "elasticity": -0.8
+  },
+  {
+    "sku": "SCH-1005",
+    "pattern": "trending_down",
+    "category": "Back to School",
+    "elasticity": -0.8
+  },
+  {
+    "sku": "SCH-1006",
+    "pattern": "thin_coldstart",
+    "category": "Back to School",
+    "elasticity": -0.8
+  },
+  {
+    "sku": "HOL-1001",
+    "pattern": "smooth_seasonal",
+    "category": "Holiday Decor",
+    "elasticity": -1.2
+  },
+  {
+    "sku": "HOL-1002",
+    "pattern": "smooth_seasonal",
+    "category": "Holiday Decor",
+    "elasticity": -1.2
+  },
+  {
+    "sku": "HOL-1003",
+    "pattern": "smooth_seasonal",
+    "category": "Holiday Decor",
+    "elasticity": -1.2
+  },
+  {
+    "sku": "HOL-1004",
+    "pattern": "trending_up",
+    "category": "Holiday Decor",
+    "elasticity": -1.2
+  },
+  {
+    "sku": "HOL-1005",
+    "pattern": "trending_down",
+    "category": "Holiday Decor",
+    "elasticity": -1.2
+  },
+  {
+    "sku": "HOL-1006",
+    "pattern": "thin_coldstart",
+    "category": "Holiday Decor",
+    "elasticity": -1.2
+  },
+  {
+    "sku": "STP-1001",
+    "pattern": "smooth_seasonal",
+    "category": "Everyday Staples",
+    "elasticity": -0.3
+  },
+  {
+    "sku": "STP-1002",
+    "pattern": "smooth_seasonal",
+    "category": "Everyday Staples",
+    "elasticity": -0.3
+  },
+  {
+    "sku": "STP-1003",
+    "pattern": "smooth_seasonal",
+    "category": "Everyday Staples",
+    "elasticity": -0.3
+  },
+  {
+    "sku": "STP-1004",
+    "pattern": "trending_up",
+    "category": "Everyday Staples",
+    "elasticity": -0.3
+  },
+  {
+    "sku": "STP-1005",
+    "pattern": "trending_down",
+    "category": "Everyday Staples",
+    "elasticity": -0.3
+  },
+  {
+    "sku": "STP-1006",
+    "pattern": "thin_coldstart",
+    "category": "Everyday Staples",
+    "elasticity": -0.3
+  },
+  {
+    "sku": "FIT-1001",
+    "pattern": "smooth_seasonal",
+    "category": "Fitness",
+    "elasticity": -1.8
+  },
+  {
+    "sku": "FIT-1002",
+    "pattern": "smooth_seasonal",
+    "category": "Fitness",
+    "elasticity": -1.8
+  },
+  {
+    "sku": "FIT-1003",
+    "pattern": "smooth_seasonal",
+    "category": "Fitness",
+    "elasticity": -1.8
+  },
+  {
+    "sku": "FIT-1004",
+    "pattern": "trending_up",
+    "category": "Fitness",
+    "elasticity": -1.8
+  },
+  {
+    "sku": "FIT-1005",
+    "pattern": "trending_down",
+    "category": "Fitness",
+    "elasticity": -1.8
+  },
+  {
+    "sku": "FIT-1006",
+    "pattern": "thin_coldstart",
+    "category": "Fitness",
+    "elasticity": -1.8
+  },
+  {
+    "sku": "ELC-1001",
+    "pattern": "smooth_seasonal",
+    "category": "Electronics",
+    "elasticity": -2.2
+  },
+  {
+    "sku": "ELC-1002",
+    "pattern": "smooth_seasonal",
+    "category": "Electronics",
+    "elasticity": -2.2
+  },
+  {
+    "sku": "ELC-1003",
+    "pattern": "smooth_seasonal",
+    "category": "Electronics",
+    "elasticity": -2.2
+  },
+  {
+    "sku": "ELC-1004",
+    "pattern": "trending_up",
+    "category": "Electronics",
+    "elasticity": -2.2
+  },
+  {
+    "sku": "ELC-1005",
+    "pattern": "trending_down",
+    "category": "Electronics",
+    "elasticity": -2.2
+  },
+  {
+    "sku": "ELC-1006",
+    "pattern": "thin_coldstart",
+    "category": "Electronics",
+    "elasticity": -2.2
+  },
+  {
+    "sku": "ELC-1007",
+    "pattern": "intermittent",
+    "category": "Electronics",
+    "elasticity": 0.0
+  },
+  {
+    "sku": "FIT-1007",
+    "pattern": "intermittent",
+    "category": "Fitness",
+    "elasticity": 0.0
+  },
+  {
+    "sku": "STP-1007",
+    "pattern": "intermittent",
+    "category": "Everyday Staples",
+    "elasticity": 0.0
+  },
+  {
+    "sku": "ELC-1008",
+    "pattern": "intermittent",
+    "category": "Electronics",
+    "elasticity": 0.0
+  },
+  {
+    "sku": "FIT-1008",
+    "pattern": "intermittent",
+    "category": "Fitness",
+    "elasticity": 0.0
+  },
+  {
+    "sku": "STP-1008",
+    "pattern": "intermittent",
+    "category": "Everyday Staples",
+    "elasticity": 0.0
+  },
+  {
+    "sku": "ELC-1009",
+    "pattern": "intermittent",
+    "category": "Electronics",
+    "elasticity": 0.0
+  },
+  {
+    "sku": "FIT-1009",
+    "pattern": "intermittent",
+    "category": "Fitness",
+    "elasticity": 0.0
+  },
+  {
+    "sku": "STP-1009",
+    "pattern": "intermittent",
+    "category": "Everyday Staples",
+    "elasticity": 0.0
+  },
+  {
+    "sku": "ELC-1010",
+    "pattern": "intermittent",
+    "category": "Electronics",
+    "elasticity": 0.0
+  },
+  {
+    "sku": "ELC-1011",
+    "pattern": "lumpy",
+    "category": "Electronics",
+    "elasticity": 0.0
+  },
+  {
+    "sku": "HOL-1007",
+    "pattern": "lumpy",
+    "category": "Holiday Decor",
+    "elasticity": 0.0
+  },
+  {
+    "sku": "ELC-1012",
+    "pattern": "lumpy",
+    "category": "Electronics",
+    "elasticity": 0.0
+  },
+  {
+    "sku": "HOL-1008",
+    "pattern": "lumpy",
+    "category": "Holiday Decor",
+    "elasticity": 0.0
+  },
+  {
+    "sku": "ELC-1013",
+    "pattern": "lumpy",
+    "category": "Electronics",
+    "elasticity": 0.0
+  },
+  {
+    "sku": "HOL-1009",
+    "pattern": "lumpy",
+    "category": "Holiday Decor",
+    "elasticity": 0.0
+  },
+  {
+    "sku": "WIN-1007",
+    "pattern": "stockout_gap",
+    "category": "Winter Apparel",
+    "elasticity": -1.5
+  },
+  {
+    "sku": "SUM-1007",
+    "pattern": "stockout_gap",
+    "category": "Summer Outdoor",
+    "elasticity": -1.5
+  },
+  {
+    "sku": "SCH-1007",
+    "pattern": "stockout_gap",
+    "category": "Back to School",
+    "elasticity": -0.8
+  },
+  {
+    "sku": "HOL-1010",
+    "pattern": "stockout_gap",
+    "category": "Holiday Decor",
+    "elasticity": -1.2
+  },
+  {
+    "sku": "STP-1010",
+    "pattern": "stockout_gap",
+    "category": "Everyday Staples",
+    "elasticity": -0.3
+  },
+  {
+    "sku": "FIT-1010",
+    "pattern": "stockout_gap",
+    "category": "Fitness",
+    "elasticity": -1.8
+  },
+  {
+    "sku": "SCH-1008",
+    "pattern": "new_launch",
+    "category": "Back to School",
+    "elasticity": -0.8
+  },
+  {
+    "sku": "HOL-1011",
+    "pattern": "new_launch",
+    "category": "Holiday Decor",
+    "elasticity": -1.2
+  },
+  {
+    "sku": "STP-1011",
+    "pattern": "new_launch",
+    "category": "Everyday Staples",
+    "elasticity": -0.3
+  },
+  {
+    "sku": "FIT-1011",
+    "pattern": "new_launch",
+    "category": "Fitness",
+    "elasticity": -1.8
+  },
+  {
+    "sku": "ELC-1014",
+    "pattern": "new_launch",
+    "category": "Electronics",
+    "elasticity": -2.2
+  },
+  {
+    "sku": "WIN-1008",
+    "pattern": "new_launch",
+    "category": "Winter Apparel",
+    "elasticity": -1.5
+  },
+  {
+    "sku": "STP-1012",
+    "pattern": "declining",
+    "category": "Everyday Staples",
+    "elasticity": -0.3
+  },
+  {
+    "sku": "FIT-1012",
+    "pattern": "declining",
+    "category": "Fitness",
+    "elasticity": -1.8
+  },
+  {
+    "sku": "ELC-1015",
+    "pattern": "declining",
+    "category": "Electronics",
+    "elasticity": -2.2
+  },
+  {
+    "sku": "WIN-1009",
+    "pattern": "declining",
+    "category": "Winter Apparel",
+    "elasticity": -1.5
+  },
+  {
+    "sku": "SUM-1008",
+    "pattern": "declining",
+    "category": "Summer Outdoor",
+    "elasticity": -1.5
+  },
+  {
+    "sku": "SCH-1009",
+    "pattern": "declining",
+    "category": "Back to School",
+    "elasticity": -0.8
+  }
+]
