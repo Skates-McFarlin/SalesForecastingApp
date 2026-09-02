@@ -18,7 +18,7 @@ import numpy as np
 import pandas as pd
 
 from . import statistical, borrowed_shape, intermittent, chronos_model
-from .base import Forecast, clip_nonneg, mae, monthly_actuals
+from .base import Forecast, clip_nonneg, mae, monthly_actuals, conformal_halfwidths
 from .lightgbm_model import LightGBMForecaster
 
 # A SKU below (horizon + this) months can't learn its own yearly shape; it uses
@@ -138,8 +138,30 @@ def run_forecast(
         w = {mid: w[mid] / s for mid in members}
 
         yhat = clip_nonneg(sum(w[mid] * members[mid][0].yhat for mid in members))
-        low = clip_nonneg(sum(w[mid] * members[mid][0].low for mid in members))
-        high = clip_nonneg(sum(w[mid] * members[mid][0].high for mid in members))
+
+        # Conformal band: calibrate the interval to the weighted ensemble's own
+        # errors on the validation fold, rather than trusting each model's
+        # parametric interval. This right-sizes per SKU - tightening the
+        # over-wide smooth/trending SKUs and widening the under-covered
+        # declining / cold-start ones. Falls back to the weighted member
+        # intervals when no validation is available.
+        half = None
+        if val_actual is not None:
+            wv = [(mid, members[mid][1]) for mid in members if members[mid][1] is not None]
+            sw = sum(w[mid] for mid, _ in wv)
+            if wv and sw > 0:
+                weighted_val = sum((w[mid] / sw) * valy for mid, valy in wv)
+                half = conformal_halfwidths(val_actual - weighted_val, horizon)
+        if half is not None:
+            # Floor the band so a near-zero forecast (e.g. a launching product
+            # whose pre-launch validation errors were ~0) never shows a
+            # degenerate zero-width interval.
+            half = np.maximum(half, 0.15 * yhat)
+            low = clip_nonneg(yhat - half)
+            high = clip_nonneg(yhat + half)
+        else:
+            low = clip_nonneg(sum(w[mid] * members[mid][0].low for mid in members))
+            high = clip_nonneg(sum(w[mid] * members[mid][0].high for mid in members))
         results[g] = (label, Forecast(yhat=yhat, low=low, high=high))
 
     return results

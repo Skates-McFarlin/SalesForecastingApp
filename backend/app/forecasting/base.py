@@ -65,3 +65,26 @@ def monthly_actuals(df_history, start_date, horizon):
 def clip_nonneg(arr):
     """Unit sales can't go negative; clamp per month."""
     return np.clip(np.asarray(arr, dtype=float), a_min=0.0, a_max=None)
+
+
+def conformal_halfwidths(residuals, horizon, alpha=0.2):
+    """Split-conformal interval half-widths from a model's own recent errors.
+
+    Instead of trusting a model's parametric interval (which assumes bell-curve
+    errors that sparse retail data violates), take the absolute errors it
+    actually made on a held-out fold and use their empirical quantile as the
+    band - a distribution-free, coverage-targeting interval. The finite-sample
+    correction ((1-alpha)(1+1/n)) is standard split conformal. Widths grow ~sqrt
+    with the horizon (uncertainty compounds) while preserving the average level,
+    so later months are wider. Returns per-month half-widths, or None if there
+    are no residuals to calibrate from."""
+    residuals = np.abs(np.asarray(residuals, dtype=float))
+    n = len(residuals)
+    if n == 0:
+        return None
+    level = min(1.0, (1 - alpha) * (1 + 1.0 / n))
+    q = float(np.quantile(residuals, level))
+    steps = np.arange(1, horizon + 1, dtype=float)
+    scale = np.sqrt(steps)
+    scale = scale / scale.mean()
+    return q * scale
