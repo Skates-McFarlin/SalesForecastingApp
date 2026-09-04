@@ -27,7 +27,7 @@ def upgrade():
     op.create_table(
         'prediction',
         sa.Column('id', sa.Integer(), nullable=False),
-        sa.Column('file_id', sa.Integer(), nullable=False),
+        sa.Column('file_id', sa.Integer(), nullable=True),
         sa.Column('product_name', sa.String(length=100), nullable=False, index=True),
         sa.Column('sku', sa.String(length=120), nullable=True, index=True),
         sa.Column('duration', sa.String(length=120), nullable=False),
@@ -50,8 +50,34 @@ def upgrade():
         sa.ForeignKeyConstraint(['file_id'], ['file.id']),
         sa.PrimaryKeyConstraint('id'),
     )
+    # Persistent catalog (Phase 0: the app becomes stateful) --------------------
+    op.create_table(
+        'product',
+        sa.Column('id', sa.Integer(), nullable=False),
+        sa.Column('key', sa.String(length=200), nullable=False, unique=True, index=True),
+        sa.Column('sku', sa.String(length=120), nullable=True, index=True),
+        sa.Column('name', sa.String(length=200), nullable=False),
+        sa.Column('category', sa.String(length=120), nullable=True),
+        sa.Column('attributes', sa.Text(), nullable=True),
+        sa.Column('created_at', sa.DateTime(), nullable=True),
+        sa.Column('updated_at', sa.DateTime(), nullable=True),
+        sa.PrimaryKeyConstraint('id'),
+    )
+    op.create_table(
+        'sales_record',
+        sa.Column('id', sa.Integer(), nullable=False),
+        sa.Column('product_id', sa.Integer(), nullable=False, index=True),
+        sa.Column('date', sa.Date(), nullable=False, index=True),
+        sa.Column('quantity', sa.Float(), nullable=False),
+        sa.Column('unit_price', sa.Float(), nullable=True),
+        sa.ForeignKeyConstraint(['product_id'], ['product.id']),
+        sa.PrimaryKeyConstraint('id'),
+        sa.UniqueConstraint('product_id', 'date', name='uq_sales_product_date'),
+    )
 
 
 def downgrade():
+    op.drop_table('sales_record')
+    op.drop_table('product')
     op.drop_table('prediction')
     op.drop_table('file')

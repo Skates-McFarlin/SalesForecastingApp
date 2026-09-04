@@ -18,12 +18,9 @@ import numpy as np
 import pandas as pd
 
 from . import statistical, borrowed_shape, intermittent, chronos_model
-from .base import Forecast, clip_nonneg, mae, monthly_actuals, conformal_halfwidths
+from .base import Forecast, clip_nonneg, mae, period_actuals, conformal_halfwidths, MONTHLY
 from .lightgbm_model import LightGBMForecaster
 
-# A SKU below (horizon + this) months can't learn its own yearly shape; it uses
-# the borrowed-shape cold-start path instead of the ensemble.
-MIN_TRAIN_MONTHS = 12
 # Strong models blended per-SKU by validation skill; "chronos" (zero-shot
 # foundation model) only participates when its model is available.
 ENSEMBLE = ["ets", "theta", "lightgbm", "chronos"]
@@ -32,53 +29,58 @@ THIN = "seasonal-borrowed"
 INTERMITTENT_NAME = "intermittent"
 
 
-def _lgbm_all(df, group_col, products, start, horizon, cat_by, hist_by):
-    return LightGBMForecaster().forecast_all(df, group_col, products, start, horizon, cat_by, hist_by)
+def _lgbm_all(df, group_col, products, start, horizon, cat_by, hist_by, grain):
+    return LightGBMForecaster().forecast_all(
+        df, group_col, products, start, horizon, cat_by, hist_by, grain)
 
 
 def run_forecast(
     df_all, group_col, products, forecast_start_date, horizon,
     category_by_group, history_months_by_group, seasonal_index_by_group,
+    grain=MONTHLY,
 ):
-    """Returns {group_key: (model_label, Forecast)}."""
+    """Returns {group_key: (model_label, Forecast)}. A SKU with fewer than
+    (horizon + grain.min_train) periods can't learn its own shape and takes the
+    borrowed-shape cold-start path instead of the ensemble."""
+    cold_start_cut = horizon + grain.min_train
     # Forecasts on FULL history (the real forward forecast).
-    stat_full = statistical.forecast_all(df_all, group_col, horizon)
+    stat_full = statistical.forecast_all(df_all, group_col, horizon, grain)
     lgbm_full = _lgbm_all(df_all, group_col, products, forecast_start_date, horizon,
-                          category_by_group, history_months_by_group)
+                          category_by_group, history_months_by_group, grain)
     chronos_full = chronos_model.forecast_all(df_all, group_col, products, horizon)
 
-    # Validation fold: re-forecast the last `horizon` months of known history to
+    # Validation fold: re-forecast the last `horizon` periods of known history to
     # score each model per SKU and set its ensemble weight.
     data_max = df_all["ds"].max()
-    val_start = data_max - pd.DateOffset(months=horizon - 1)
+    val_start = pd.date_range(end=data_max, periods=horizon, freq=grain.freq)[0]
     df_val_train = df_all[df_all["ds"] < val_start]
     have_val = len(df_val_train) > 0
-    stat_val = statistical.forecast_all(df_val_train, group_col, horizon) if have_val else {}
+    stat_val = statistical.forecast_all(df_val_train, group_col, horizon, grain) if have_val else {}
     lgbm_val = (_lgbm_all(df_val_train, group_col, products, val_start, horizon,
-                          category_by_group, history_months_by_group) if have_val else {})
+                          category_by_group, history_months_by_group, grain) if have_val else {})
     chronos_val = chronos_model.forecast_all(df_val_train, group_col, products, horizon) if have_val else {}
 
     # Intermittent/lumpy detection among mature SKUs; forecast those with
     # Croston/TSB (full + validation) to add as a weighted specialist member.
     intermittent_skus = [
         g for g in products
-        if history_months_by_group.get(g, 0) >= horizon + MIN_TRAIN_MONTHS
-        and intermittent.demand_pattern(df_all[df_all[group_col] == g]) in intermittent.INTERMITTENT_LABELS
+        if history_months_by_group.get(g, 0) >= cold_start_cut
+        and intermittent.demand_pattern(df_all[df_all[group_col] == g], grain) in intermittent.INTERMITTENT_LABELS
     ]
     interm_full = (intermittent.forecast_all(
-        df_all[df_all[group_col].isin(intermittent_skus)], group_col, horizon)
+        df_all[df_all[group_col].isin(intermittent_skus)], group_col, horizon, grain)
         if intermittent_skus else {})
     interm_val = (intermittent.forecast_all(
-        df_val_train[df_val_train[group_col].isin(intermittent_skus)], group_col, horizon)
+        df_val_train[df_val_train[group_col].isin(intermittent_skus)], group_col, horizon, grain)
         if intermittent_skus and have_val else {})
 
     results = {}
     for g in products:
         n = history_months_by_group.get(g, 0)
-        if n < horizon + MIN_TRAIN_MONTHS:
+        if n < cold_start_cut:
             df_sku = df_all[df_all[group_col] == g]
             results[g] = (THIN, borrowed_shape.forecast(
-                df_sku, forecast_start_date, horizon, seasonal_index_by_group.get(g)))
+                df_sku, forecast_start_date, horizon, seasonal_index_by_group.get(g), grain))
             continue
 
         # Assemble members: name -> (full Forecast, validation yhat or None).
@@ -123,7 +125,7 @@ def run_forecast(
         # Weight each member by inverse squared validation error (sharpened so a
         # clearly-better model dominates); members with no validation forecast
         # get the average error. Falls back to equal weight when no validation.
-        val_actual = monthly_actuals(df_all[df_all[group_col] == g], val_start, horizon) if have_val else None
+        val_actual = period_actuals(df_all[df_all[group_col] == g], val_start, horizon, grain) if have_val else None
         errs = {}
         if val_actual is not None:
             for mid, (_, valy) in members.items():

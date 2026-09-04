@@ -1,4 +1,5 @@
 """Shared types and helpers for the forecaster competition."""
+from dataclasses import dataclass
 from typing import NamedTuple
 
 import numpy as np
@@ -6,6 +7,45 @@ import pandas as pd
 from scipy.stats import norm
 
 DEFAULT_INTERVAL_WIDTH = 0.8
+
+
+@dataclass(frozen=True)
+class Grain:
+    """The time grain the whole engine runs at, so weekly is a config rather
+    than a rewrite. Monthly stays the default; weekly is the operational grain
+    for inventory (see the roadmap)."""
+    label: str            # "monthly" | "weekly"
+    freq: str             # pandas offset alias for the period start
+    season_length: int    # periods per year (12 or 52)
+    lags: tuple           # LightGBM autoregressive lags, in periods
+    roll_windows: tuple   # rolling mean/std windows (short, mid, long), in periods
+    min_train: int        # below (horizon + this) periods a SKU uses cold-start
+    sufficient_history: int  # enough periods to trust a SKU's own seasonality
+
+    def future_index(self, start, horizon):
+        return pd.date_range(start=start, periods=horizon, freq=self.freq)
+
+    def period_key(self, ts):
+        """Stable key for matching a timestamp to a period (align data<->forecast)."""
+        ts = pd.Timestamp(ts)
+        return ts.strftime("%Y-%m") if self.label == "monthly" else ts.strftime("%Y-%m-%d")
+
+    def period_of_year(self, ts):
+        """1..12 for monthly, ISO week 1..53 for weekly - the seasonal bucket."""
+        ts = pd.Timestamp(ts)
+        return ts.month if self.label == "monthly" else int(ts.isocalendar().week)
+
+
+MONTHLY = Grain(
+    label="monthly", freq="MS", season_length=12,
+    lags=(1, 2, 3, 6, 12, 24), roll_windows=(3, 6, 12),
+    min_train=12, sufficient_history=24,
+)
+WEEKLY = Grain(
+    label="weekly", freq="W-SUN", season_length=52,
+    lags=(1, 2, 3, 4, 8, 52), roll_windows=(4, 8, 26),
+    min_train=26, sufficient_history=52,
+)
 
 
 class Forecast(NamedTuple):
@@ -25,9 +65,10 @@ class Forecast(NamedTuple):
         return float(np.sum(self.yhat))
 
 
-def future_index(start_date, horizon):
-    """The horizon's month-start timestamps, matching the app's monthly grain."""
-    return pd.date_range(start=start_date, periods=horizon, freq="MS")
+def future_index(start_date, horizon, freq="MS"):
+    """The horizon's period-start timestamps at the given frequency (month-start
+    by default; pass a Grain's freq for weekly)."""
+    return pd.date_range(start=start_date, periods=horizon, freq=freq)
 
 
 # Assumed correlation between a SKU's month-to-month forecast errors. Pure
@@ -68,15 +109,20 @@ def mae(pred, actual):
     return float(np.mean(np.abs(pred - actual)))
 
 
-def monthly_actuals(df_history, start_date, horizon):
-    """Actual y for each month of a window, 0 where the file has no row - used
-    to score a backtest against what really happened."""
-    by_month = {
-        d.strftime("%Y-%m"): float(v)
+def period_actuals(df_history, start_date, horizon, grain=MONTHLY):
+    """Actual y for each period of a window, 0 where there's no row - used to
+    score a backtest against what really happened, at any grain."""
+    by_period = {
+        grain.period_key(d): float(v)
         for d, v in zip(df_history["ds"], df_history["y"])
     }
-    wanted = future_index(start_date, horizon).strftime("%Y-%m")
-    return np.array([by_month.get(m, 0.0) for m in wanted])
+    wanted = [grain.period_key(d) for d in grain.future_index(start_date, horizon)]
+    return np.array([by_period.get(k, 0.0) for k in wanted])
+
+
+def monthly_actuals(df_history, start_date, horizon):
+    """Back-compat monthly wrapper for period_actuals."""
+    return period_actuals(df_history, start_date, horizon, MONTHLY)
 
 
 def clip_nonneg(arr):

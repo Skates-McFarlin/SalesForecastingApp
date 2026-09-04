@@ -66,6 +66,39 @@ export async function inspectFile(file, { signal } = {}) {
   }
 }
 
+// --- Stateful catalog (Phase 0) -------------------------------------------
+
+export async function fetchCatalog() {
+  return asJson(await fetch(`${BASE}/api/catalog`));
+}
+
+export async function importSales(file) {
+  const form = new FormData();
+  form.append("file", file);
+  return asJson(
+    await fetch(`${BASE}/api/catalog/import`, { method: "POST", body: form })
+  );
+}
+
+async function catalogRun(path, startDate, duration, signal) {
+  return asJson(
+    await fetch(`${BASE}/api/catalog/${path}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ start_date: startDate, duration }),
+      signal,
+    })
+  );
+}
+
+export async function forecastCatalog(startDate, duration, { signal } = {}) {
+  return catalogRun("forecast", startDate, duration, signal);
+}
+
+export async function scoreCatalogAccuracy(startDate, duration, { signal } = {}) {
+  return catalogRun("accuracy", startDate, duration, signal);
+}
+
 export async function fetchSummary(predictionId) {
   const body = await asJson(await fetch(`${BASE}/api/predictions/${predictionId}/summary`));
   return body.Summary;

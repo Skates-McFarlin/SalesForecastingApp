@@ -17,7 +17,9 @@ from app.models.prediction import Prediction
 from app.models.file import File
 from app.extensions import db
 from app.forecasting import selector, elasticity as elasticity_mod
-from app.forecasting.base import aggregate_interval, future_index, monthly_actuals
+from app.forecasting.base import (
+    aggregate_interval, future_index, monthly_actuals, period_actuals, MONTHLY,
+)
 from huggingface_hub import hf_hub_download
 import os
 
@@ -663,7 +665,7 @@ def _prior_index_from_season(season_tag):
 
 
 def predict_sales_forecasting(data, start_date, duration):
-
+    """Forecast from an uploaded file (stores the file blob, then forecasts)."""
     file_data = data.read()
 
     file_record = File(filename=data.filename, filedata=file_data)
@@ -673,11 +675,33 @@ def predict_sales_forecasting(data, start_date, duration):
     db.session.flush()
 
     json_data, extra_context_by_group = preprocess_data(data)
+    return _forecast_core(
+        json_data, extra_context_by_group, start_date, duration, file_id=file_record.id
+    )
+
+
+def predict_from_catalog(start_date, duration):
+    """Forecast the persistent catalog - the stored business is the source of
+    truth, so no upload is needed. Grain (weekly for daily data, else monthly)
+    is detected from the catalog."""
+    from app.controllers.catalog_controller import catalog_to_json_data
+
+    json_data, extra_context_by_group, grain = catalog_to_json_data()
+    if not json_data:
+        return json.dumps([])
+    return _forecast_core(
+        json_data, extra_context_by_group, start_date, duration, file_id=None, grain=grain
+    )
+
+
+def _forecast_core(json_data, extra_context_by_group, start_date, duration,
+                   file_id=None, grain=MONTHLY):
+    """Shared forecasting pipeline over already-parsed data, whichever source it
+    came from (an upload or the stored catalog) and at whichever grain."""
     forecast_periods = duration
     forecast_start_date = start_date
-    forecast_last_start_date = (
-        str(int(forecast_start_date[:4]) - 1) + forecast_start_date[4:]
-    )
+    # The same window one year back, for the year-over-year comparison.
+    last_year_start = pd.Timestamp(start_date) - pd.DateOffset(years=1)
 
     df = pd.DataFrame(json_data)
 
@@ -724,42 +748,49 @@ def predict_sales_forecasting(data, start_date, duration):
     # chosen index; None means "enough history, use its own seasonality".
     category_by_group = {}
     own_months_by_group = {}
-    per_category_indices = defaultdict(list)
-    all_indices = []
     for group_key in products:
-        df_g = df[df[group_col] == group_key]
         tags = tags_by_group.get(group_key, {})
-        category = (
+        category_by_group[group_key] = (
             extra_context_by_group.get(group_key, {}).get("Category")
             or tags.get("category")
             or "unknown"
         )
-        category_by_group[group_key] = category
-        own_months_by_group[group_key] = len(df_g)
-        if len(df_g) >= MIN_POOL_MONTHS:
-            idx = _monthly_seasonal_index(df_g)
-            if idx:
-                per_category_indices[category].append(idx)
-                all_indices.append(idx)
-    pooled_by_category = {c: _average_indices(v) for c, v in per_category_indices.items()}
-    pooled_all = _average_indices(all_indices)
+        own_months_by_group[group_key] = len(df[df[group_col] == group_key])
 
     seasonal_index_by_group = {}
     method_by_group = {}
-    for group_key in products:
-        season_tag = tags_by_group.get(group_key, {}).get("seasonality", "unknown")
-        if own_months_by_group[group_key] >= SUFFICIENT_HISTORY_MONTHS:
-            seasonal_index_by_group[group_key], method_by_group[group_key] = None, "own history"
-        elif pooled_by_category.get(category_by_group[group_key]):
-            seasonal_index_by_group[group_key] = pooled_by_category[category_by_group[group_key]]
-            method_by_group[group_key] = "category seasonality"
-        elif pooled_all:
-            seasonal_index_by_group[group_key], method_by_group[group_key] = pooled_all, "overall seasonality"
-        elif _prior_index_from_season(season_tag):
-            seasonal_index_by_group[group_key] = _prior_index_from_season(season_tag)
-            method_by_group[group_key] = f"seasonal prior ({season_tag})"
-        else:
-            seasonal_index_by_group[group_key], method_by_group[group_key] = None, "limited history"
+    if grain is MONTHLY:
+        per_category_indices = defaultdict(list)
+        all_indices = []
+        for group_key in products:
+            if own_months_by_group[group_key] >= MIN_POOL_MONTHS:
+                idx = _monthly_seasonal_index(df[df[group_col] == group_key])
+                if idx:
+                    per_category_indices[category_by_group[group_key]].append(idx)
+                    all_indices.append(idx)
+        pooled_by_category = {c: _average_indices(v) for c, v in per_category_indices.items()}
+        pooled_all = _average_indices(all_indices)
+        for group_key in products:
+            season_tag = tags_by_group.get(group_key, {}).get("seasonality", "unknown")
+            if own_months_by_group[group_key] >= SUFFICIENT_HISTORY_MONTHS:
+                seasonal_index_by_group[group_key], method_by_group[group_key] = None, "own history"
+            elif pooled_by_category.get(category_by_group[group_key]):
+                seasonal_index_by_group[group_key] = pooled_by_category[category_by_group[group_key]]
+                method_by_group[group_key] = "category seasonality"
+            elif pooled_all:
+                seasonal_index_by_group[group_key], method_by_group[group_key] = pooled_all, "overall seasonality"
+            elif _prior_index_from_season(season_tag):
+                seasonal_index_by_group[group_key] = _prior_index_from_season(season_tag)
+                method_by_group[group_key] = f"seasonal prior ({season_tag})"
+            else:
+                seasonal_index_by_group[group_key], method_by_group[group_key] = None, "limited history"
+    else:
+        # Weekly: mature SKUs learn their own 52-week seasonality; cold-start
+        # SKUs use a flat borrowed level (weekly seasonal-shape borrowing is a
+        # later refinement).
+        for group_key in products:
+            enough = own_months_by_group[group_key] >= grain.sufficient_history
+            method_by_group[group_key] = "own history" if enough else "limited history"
 
     # Forecast every SKU: an ensemble of fast statistical models + a global
     # LightGBM for mature SKUs, borrowed-shape for thin ones. All batched, so
@@ -767,9 +798,10 @@ def predict_sales_forecasting(data, start_date, duration):
     # loop (see app/forecasting/selector.py).
     forecasts = selector.run_forecast(
         df, group_col, list(products), forecast_start_date, forecast_periods,
-        category_by_group, own_months_by_group, seasonal_index_by_group,
+        category_by_group, own_months_by_group, seasonal_index_by_group, grain,
     )
-    end_date = future_index(forecast_start_date, forecast_periods).max() + pd.offsets.MonthEnd(0)
+    end_ts = grain.future_index(forecast_start_date, forecast_periods).max()
+    end_date = (end_ts + pd.offsets.MonthEnd(0)) if grain is MONTHLY else end_ts
 
     # Price elasticity per SKU (only when the file carries monthly prices);
     # powers the "what-if a price change" figure client-side.
@@ -792,17 +824,10 @@ def predict_sales_forecasting(data, start_date, duration):
         sum_forecast_now = fc.total
         forecast_low, forecast_high = aggregate_interval(fc)
 
-        selected_months = (
-            df_product["ds"]
-            .dt.strftime("%Y-%m")
-            .isin(
-                pd.date_range(
-                    start=forecast_last_start_date, periods=forecast_periods, freq="MS"
-                ).strftime("%Y-%m")
-            )
-        )
+        ly_keys = {grain.period_key(d) for d in grain.future_index(last_year_start, forecast_periods)}
+        in_window = df_product["ds"].apply(lambda d: grain.period_key(d) in ly_keys)
 
-        actual_sales_values = df_product.loc[selected_months, "y"].tolist()
+        actual_sales_values = df_product.loc[in_window, "y"].tolist()
         # Require the full comparison window, not just some overlap. A
         # 24-month forecast whose "last year" window only has 12 real months
         # (the other 12 fall past the file's history) used to silently sum
@@ -829,7 +854,7 @@ def predict_sales_forecasting(data, start_date, duration):
         has_data_gap = _has_data_gap(df_product)
 
         prediction = Prediction(
-            file_id=file_record.id,
+            file_id=file_id,
             product_name=product,
             sku=sku,
             duration=f"{forecast_start_date} - {end_date.date()}",
@@ -1169,12 +1194,26 @@ def preprocess_data(data):
 
 
 def calculate_error_metrics(data, start_date, duration):
-    """Backtest accuracy: train only on data before start_date, forecast the
-    period, and score against what actually happened. Uses the SAME ensemble
-    the app forecasts with (app/forecasting/selector.py), so the Accuracy tab
-    measures the real model rather than a stand-in - and it's batched, so this
-    is fast instead of a per-product Prophet loop."""
+    """Backtest accuracy from an uploaded file."""
     json_data, extra_context_by_group = preprocess_data(data)
+    return _error_metrics_core(json_data, extra_context_by_group, start_date, duration)
+
+
+def calculate_error_metrics_from_catalog(start_date, duration):
+    """Backtest accuracy on the stored catalog, at the catalog's grain."""
+    from app.controllers.catalog_controller import catalog_to_json_data
+
+    json_data, extra_context_by_group, grain = catalog_to_json_data()
+    if not json_data:
+        return json.dumps([])
+    return _error_metrics_core(json_data, extra_context_by_group, start_date, duration, grain)
+
+
+def _error_metrics_core(json_data, extra_context_by_group, start_date, duration, grain=MONTHLY):
+    """Train only on data before start_date, forecast the period, and score
+    against what actually happened. Uses the SAME ensemble the app forecasts
+    with (app/forecasting/selector.py), so the Accuracy tab measures the real
+    model - and it's batched, so this is fast instead of a per-product loop."""
     horizon = duration
 
     full_df = pd.DataFrame(json_data)
@@ -1197,14 +1236,15 @@ def calculate_error_metrics(data, start_date, duration):
     history_by = {g: int((train_df[group_col] == g).sum()) for g in products}
     forecasts = selector.run_forecast(
         train_df, group_col, products, start_date, horizon,
-        category_by_group, history_by, {},
+        category_by_group, history_by, {}, grain,
     )
 
-    end_date = future_index(start_date, horizon).max() + pd.offsets.MonthEnd(0)
+    end_ts = grain.future_index(start_date, horizon).max()
+    end_date = (end_ts + pd.offsets.MonthEnd(0)) if grain is MONTHLY else end_ts
     error_results = []
     for g in products:
         df_g = full_df[full_df[group_col] == g]
-        actual_arr = monthly_actuals(df_g, start_date, horizon)
+        actual_arr = period_actuals(df_g, start_date, horizon, grain)
         yhat_arr = np.asarray(forecasts[g][1].yhat, dtype=float)
 
         mae = np.mean(np.abs(yhat_arr - actual_arr))

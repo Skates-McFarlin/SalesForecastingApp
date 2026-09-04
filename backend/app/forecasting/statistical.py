@@ -14,9 +14,8 @@ import pandas as pd
 from statsforecast import StatsForecast
 from statsforecast.models import AutoETS, DynamicOptimizedTheta, SeasonalNaive
 
-from .base import Forecast, clip_nonneg
+from .base import Forecast, clip_nonneg, MONTHLY
 
-SEASON = 12
 LEVEL = 80  # interval coverage StatsForecast is asked for
 
 # Column name each model writes in the forecast frame -> our model id.
@@ -27,30 +26,31 @@ MODEL_COLUMNS = {
 }
 
 
-def _new_engine():
+def _new_engine(grain):
+    season = grain.season_length
     return StatsForecast(
         models=[
-            AutoETS(season_length=SEASON),
-            DynamicOptimizedTheta(season_length=SEASON),
-            SeasonalNaive(season_length=SEASON),
+            AutoETS(season_length=season),
+            DynamicOptimizedTheta(season_length=season),
+            SeasonalNaive(season_length=season),
         ],
-        freq="MS",
+        freq=grain.freq,
         n_jobs=1,
         # Any series a model chokes on (too short, degenerate) falls back
         # gracefully instead of failing the whole batch.
-        fallback_model=SeasonalNaive(season_length=SEASON),
+        fallback_model=SeasonalNaive(season_length=season),
     )
 
 
-def forecast_all(df_all, group_col, horizon):
+def forecast_all(df_all, group_col, horizon, grain=MONTHLY):
     """Batched forecast for every series. Returns
-    {model_id: {group_key: Forecast}} covering the `horizon` months after each
+    {model_id: {group_key: Forecast}} covering the `horizon` periods after each
     series' last observation."""
     sf_df = (
         df_all.rename(columns={group_col: "unique_id"})[["unique_id", "ds", "y"]]
         .sort_values(["unique_id", "ds"])
     )
-    fc = _new_engine().forecast(df=sf_df, h=horizon, level=[LEVEL])
+    fc = _new_engine(grain).forecast(df=sf_df, h=horizon, level=[LEVEL])
     if "unique_id" not in fc.columns:
         fc = fc.reset_index()
 

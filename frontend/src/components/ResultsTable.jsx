@@ -68,7 +68,7 @@ function exportCsv(rows, service) {
   URL.revokeObjectURL(url);
 }
 
-export default function ResultsTable({ rows, service, setService }) {
+export default function ResultsTable({ rows, service, setService, grain = "monthly" }) {
   const [query, setQuery] = useState("");
   const [category, setCategory] = useState("all");
   // null = use the computed default for this dataset; a real value once the
@@ -285,6 +285,7 @@ export default function ResultsTable({ rows, service, setService }) {
                 isOpen={expanded === row.PredictionId}
                 summary={summaries[row.PredictionId]}
                 onToggle={() => toggle(row)}
+                grain={grain}
               />
             ))}
           </tbody>
@@ -344,7 +345,7 @@ export default function ResultsTable({ rows, service, setService }) {
 }
 
 /* Rendered as sibling <tr>s so an expanded summary spans the full width. */
-function RowGroup({ row, columnCount, showComparison, share, rec, service, isMover, isOpen, summary, onToggle }) {
+function RowGroup({ row, columnCount, showComparison, share, rec, service, isMover, isOpen, summary, onToggle, grain = "monthly" }) {
   const changeValue = row["% Change from Previous Year"];
   const unitDelta =
     changeValue !== "N/A" ? Number(row.Forecast) - Number(row["Last Year Actual Sales"]) : null;
@@ -417,7 +418,7 @@ function RowGroup({ row, columnCount, showComparison, share, rec, service, isMov
                 sub={`+${formatNumber(rec.safety)} safety`}
                 accent
               />
-              <MiniStat label="History" value={<HistoryValue months={row.HistoryMonths} />} />
+              <MiniStat label="History" value={<HistoryValue months={row.HistoryMonths} unit={grain === "weekly" ? "wk" : "mo"} />} />
             </div>
 
             <p className="mb-3 text-xs leading-relaxed text-[var(--ink-3)]">
@@ -564,19 +565,20 @@ function PriceWhatIf({ elasticity, source, forecast }) {
   );
 }
 
-function HistoryValue({ months }) {
+function HistoryValue({ months, unit = "mo" }) {
   if (months == null) return <span className="text-[var(--ink-3)]">—</span>;
-  const thin = months < THIN_HISTORY_MONTHS;
+  const word = unit === "wk" ? "week" : "month";
+  const thin = unit === "mo" && months < THIN_HISTORY_MONTHS;
   return (
     <span
       title={
         thin
-          ? `Only ${months} month${months === 1 ? "" : "s"} of sales history — forecast may be less reliable`
-          : `${months} months of sales history`
+          ? `Only ${months} ${word}s of sales history — forecast may be less reliable`
+          : `${months} ${word}s of sales history`
       }
       className={thin ? "font-medium text-amber-600 dark:text-amber-400" : ""}
     >
-      {months} mo
+      {months} {unit}
     </span>
   );
 }

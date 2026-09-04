@@ -8,7 +8,7 @@ certain forecasts must not look the most certain (the 360-360 problem).
 """
 import numpy as np
 
-from .base import Forecast, future_index, clip_nonneg
+from .base import Forecast, clip_nonneg, MONTHLY
 
 
 def thin_history_interval_floor(n_months):
@@ -17,24 +17,25 @@ def thin_history_interval_floor(n_months):
     return min(0.6, 1.0 / (max(1, n_months) ** 0.5))
 
 
-def forecast(df_history, start_date, horizon, seasonal_index=None):
+def forecast(df_history, start_date, horizon, seasonal_index=None, grain=MONTHLY):
     hist = df_history.sort_values("ds")
     y = hist["y"].to_numpy(dtype=float)
     n = len(y)
+    window = grain.season_length  # average the most recent year of level
 
-    months = np.array([d.month for d in future_index(start_date, horizon)])
+    periods = np.array([grain.period_of_year(d) for d in grain.future_index(start_date, horizon)])
     if seasonal_index:
-        mult = np.array([seasonal_index.get(int(m), 1.0) for m in months])
+        mult = np.array([seasonal_index.get(int(m), 1.0) for m in periods])
         # Deseasonalize the (short) launch history by the borrowed index before
         # reading its base level, so a product that happened to launch in peak
         # or trough season isn't mistaken for a bigger/smaller seller. Measured
         # ~14% better on cold-start SKUs than a plain recent mean.
-        hist_months = hist["ds"].dt.month.to_numpy()
-        deseason = y / np.array([seasonal_index.get(int(m), 1.0) or 1.0 for m in hist_months])
-        level = float(np.mean(deseason[-12:])) if n else 0.0
+        hist_periods = np.array([grain.period_of_year(d) for d in hist["ds"]])
+        deseason = y / np.array([seasonal_index.get(int(m), 1.0) or 1.0 for m in hist_periods])
+        level = float(np.mean(deseason[-window:])) if n else 0.0
     else:
         mult = np.ones(horizon)
-        level = float(np.mean(y[-12:])) if n else 0.0
+        level = float(np.mean(y[-window:])) if n else 0.0
     yhat = clip_nonneg(level * mult)
 
     total = float(np.sum(yhat))

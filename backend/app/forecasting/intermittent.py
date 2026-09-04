@@ -10,8 +10,11 @@ is principled and safe, unlike the per-SKU model *selection* that overfit in
 Phase 1.
 """
 import numpy as np
+import pandas as pd
 from statsforecast import StatsForecast
 from statsforecast.models import CrostonOptimized, TSB
+
+from .base import MONTHLY
 
 # Syntetos-Boylan thresholds. ADI = average demand interval (periods per
 # demand occurrence); CV2 = squared coefficient of variation of the non-zero
@@ -22,15 +25,15 @@ CV2_CUT = 0.49
 INTERMITTENT_LABELS = {"intermittent", "lumpy"}
 
 
-def demand_pattern(df_sku):
+def demand_pattern(df_sku, grain=MONTHLY):
     """Classify a SKU: smooth | erratic | intermittent | lumpy | no-demand."""
     s = df_sku.sort_values("ds")
     y = s["y"].to_numpy(dtype=float)
     nz = y[y > 0]
     if len(nz) == 0:
         return "no-demand"
-    span_months = (s["ds"].max().to_period("M") - s["ds"].min().to_period("M")).n + 1
-    adi = span_months / len(nz)
+    span = len(pd.date_range(s["ds"].min(), s["ds"].max(), freq=grain.freq))
+    adi = span / len(nz)
     mean_nz = nz.mean()
     cv2 = float((nz.std() / mean_nz) ** 2) if mean_nz > 0 else 0.0
 
@@ -43,7 +46,7 @@ def demand_pattern(df_sku):
     return "smooth"
 
 
-def forecast_all(df_all, group_col, horizon):
+def forecast_all(df_all, group_col, horizon, grain=MONTHLY):
     """Point forecasts for the given (intermittent) series: the mean of Croston
     and TSB. These methods return a low constant per-period rate; StatsForecast
     won't give them model-based intervals (that arrives with conformal in a
@@ -57,7 +60,7 @@ def forecast_all(df_all, group_col, horizon):
     )
     engine = StatsForecast(
         models=[CrostonOptimized(), TSB(alpha_d=0.2, alpha_p=0.2)],
-        freq="MS",
+        freq=grain.freq,
         n_jobs=1,
     )
     fc = engine.forecast(df=sf_df, h=horizon)

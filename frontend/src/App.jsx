@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { fetchErrorMetrics, generateForecast, inspectFile } from "./api";
-import { cmp, dateBounds, monthRangeForYear } from "./dates";
+import { fetchCatalog, importSales, forecastCatalog, scoreCatalogAccuracy } from "./api";
+import { catalogRange, cmp, dateBounds, monthRangeForYear } from "./dates";
 import AccuracyResults from "./components/AccuracyResults";
 import ControlPanel from "./components/ControlPanel";
 import ForecastChart from "./components/ForecastChart";
@@ -21,7 +21,6 @@ export default function App() {
   );
   const [tab, setTab] = useState("forecast");
 
-  const [file, setFile] = useState(null);
   const [year, setYear] = useState(new Date().getFullYear());
   const [month, setMonth] = useState(1);
   const [duration, setDuration] = useState(12);
@@ -29,7 +28,9 @@ export default function App() {
   const [forecast, setForecast] = useState(emptyRun);
   const [accuracy, setAccuracy] = useState(emptyRun);
   const [service, setService] = useState(SERVICE_LEVELS[1]); // 95% default
-  const [dataRange, setDataRange] = useState(null); // detected file coverage
+  const [catalog, setCatalog] = useState(null); // stored business summary
+  const [importing, setImporting] = useState(false);
+  const [dataRange, setDataRange] = useState(null); // catalog's date coverage
   const [elapsed, setElapsed] = useState(0);
   const abortRef = useRef(null);
 
@@ -38,12 +39,34 @@ export default function App() {
     localStorage.setItem("insighta-theme", theme);
   }, [theme]);
 
+  // The app opens onto the stored catalog, not a blank upload screen.
+  const refreshCatalog = () =>
+    fetchCatalog()
+      .then((c) => {
+        setCatalog(c);
+        setDataRange(catalogRange(c));
+        return c;
+      })
+      .catch(() => setCatalog({ empty: true, products: 0 }));
+
+  useEffect(() => {
+    refreshCatalog();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const active = tab === "forecast" ? forecast : accuracy;
   const setActive = tab === "forecast" ? setForecast : setAccuracy;
 
   // Start-date window derived from the uploaded file (past for backtesting,
   // forward for forecasting). Falls back to a default range before a file lands.
   const bounds = useMemo(() => dateBounds(dataRange, tab), [dataRange, tab]);
+
+  // The catalog's grain (weekly for daily data, else monthly) drives whether the
+  // horizon is counted in weeks or months.
+  const grain = catalog?.grain === "weekly" ? "weekly" : "monthly";
+  useEffect(() => {
+    setDuration(grain === "weekly" ? 8 : 12);
+  }, [grain]);
 
   // A freshly detected file snaps the start date to a sensible default.
   useEffect(() => {
@@ -81,15 +104,15 @@ export default function App() {
   }, [active.busy]);
 
   const run = async () => {
-    if (!file) return;
+    if (!catalog || catalog.empty) return;
     const startDate = `${year}-${String(month).padStart(2, "0")}-01`;
     const controller = new AbortController();
     abortRef.current = controller;
     setActive({ rows: null, error: null, busy: true });
 
-    const request = tab === "forecast" ? generateForecast : fetchErrorMetrics;
+    const request = tab === "forecast" ? forecastCatalog : scoreCatalogAccuracy;
     try {
-      const rows = await request(file, startDate, duration, { signal: controller.signal });
+      const rows = await request(startDate, duration, { signal: controller.signal });
       setActive({ rows, error: null, busy: false });
     } catch (err) {
       if (err.name === "AbortError") {
@@ -99,6 +122,20 @@ export default function App() {
       setActive({ rows: null, error: err.message, busy: false });
     } finally {
       abortRef.current = null;
+    }
+  };
+
+  // Import/sync a sales file into the catalog, then reopen onto the fresh state.
+  const doImport = async (f) => {
+    setActive({ ...active, error: null });
+    setImporting(true);
+    try {
+      await importSales(f);
+      await refreshCatalog();
+    } catch (err) {
+      setActive({ ...active, error: err.message });
+    } finally {
+      setImporting(false);
     }
   };
 
@@ -139,17 +176,14 @@ export default function App() {
       <div className="flex min-h-0 flex-1">
         <aside className="w-72 shrink-0 border-r border-[var(--line)] bg-[var(--surface)]">
           <ControlPanel
-            file={file}
-            onFile={(f) => {
-              setFile(f);
-              setActive({ ...active, error: null });
-              setDataRange(null);
-              inspectFile(f).then((r) => r && setDataRange(r));
-            }}
+            catalog={catalog}
+            importing={importing}
+            onImport={doImport}
             onReject={(message) => setActive({ ...active, error: message })}
             year={year}
             month={month}
             duration={duration}
+            grain={grain}
             bounds={bounds}
             onYear={changeYear}
             onMonth={setMonth}
@@ -174,11 +208,13 @@ export default function App() {
 
           {active.busy && <RunningState tab={tab} />}
 
-          {!active.busy && !active.rows && !active.error && <EmptyState tab={tab} hasFile={!!file} />}
+          {!active.busy && !active.rows && !active.error && (
+            <EmptyState tab={tab} hasCatalog={!!catalog && !catalog.empty} />
+          )}
 
           {!active.busy && active.rows?.length === 0 && (
             <Card className="p-10 text-center text-sm text-[var(--ink-3)]">
-              No products could be forecast from this file. Check that it has a{" "}
+              No products could be forecast from your catalog. Import a file with a{" "}
               <span className="font-medium text-[var(--ink-2)]">Product Name</span> column and
               monthly{" "}
               <span className="font-medium text-[var(--ink-2)]">Quantity Sold …</span> columns.
@@ -212,7 +248,7 @@ export default function App() {
               <Card className="p-4">
                 <ForecastChart rows={active.rows} service={service} />
               </Card>
-              <ResultsTable rows={active.rows} service={service} setService={setService} />
+              <ResultsTable rows={active.rows} service={service} setService={setService} grain={grain} />
             </div>
           )}
 
@@ -254,7 +290,7 @@ function RunningState({ tab }) {
   );
 }
 
-function EmptyState({ tab, hasFile }) {
+function EmptyState({ tab, hasCatalog }) {
   return (
     <div className="flex h-full min-h-80 items-center justify-center">
       <div className="max-w-sm text-center">
@@ -269,14 +305,18 @@ function EmptyState({ tab, hasFile }) {
           </svg>
         </div>
         <h2 className="mt-4 text-sm font-semibold">
-          {tab === "forecast" ? "No forecast yet" : "No accuracy report yet"}
+          {!hasCatalog
+            ? "Your catalog is empty"
+            : tab === "forecast"
+              ? "No forecast yet"
+              : "No accuracy report yet"}
         </h2>
         <p className="mt-1.5 text-sm leading-relaxed text-[var(--ink-2)]">
-          {hasFile
-            ? tab === "forecast"
+          {!hasCatalog
+            ? "Import a CSV or Excel file of monthly sales to build your catalog. After that, the app remembers it — you just sync new sales."
+            : tab === "forecast"
               ? "Pick a start month and length, then generate your forecast."
-              : "Pick a start month inside your data's history, then score the model against what actually happened."
-            : "Upload a CSV or Excel file of monthly sales to get started."}
+              : "Pick a start month inside your history, then score the model against what actually happened."}
         </p>
       </div>
     </div>

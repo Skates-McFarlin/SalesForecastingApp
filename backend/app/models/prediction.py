@@ -3,7 +3,7 @@ from app.extensions import db
 
 class Prediction(db.Model):
     id = db.Column(db.Integer, primary_key=True)
-    file_id = db.Column(db.Integer, db.ForeignKey("file.id"), nullable=False)
+    file_id = db.Column(db.Integer, db.ForeignKey("file.id"), nullable=True)
     product_name = db.Column(db.String(100), nullable=False, index=True)
     sku = db.Column(db.String(120), nullable=True, index=True)
     duration = db.Column(db.String(120),  nullable=False)

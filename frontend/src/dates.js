@@ -11,6 +11,16 @@ export function addMonths({ y, m }, n) {
   return { y: Math.floor(idx / 12), m: (idx % 12) + 1 };
 }
 
+// Turn the stored catalog's summary (date_from / date_to as YYYY-MM-DD) into
+// the {min_year, min_month, max_year, max_month} shape the pickers expect, or
+// null when the catalog is empty / has no dated history yet.
+export function catalogRange(catalog) {
+  if (!catalog || catalog.empty || !catalog.date_from || !catalog.date_to) return null;
+  const [minY, minM] = catalog.date_from.split("-").map(Number);
+  const [maxY, maxM] = catalog.date_to.split("-").map(Number);
+  return { min_year: minY, min_month: minM, max_year: maxY, max_month: maxM };
+}
+
 // Given a file's detected coverage (or null before one is inspected) and the
 // active tab, return the selectable start-date window and a sensible default.
 //   - Accuracy backtests against real history, so the start must sit INSIDE the
