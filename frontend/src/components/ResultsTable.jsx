@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { fetchSummary } from "../api";
 import {
-  Badge, DeltaBadge, formatNumber, Input, recommendation, SectionLabel,
+  Badge, DeltaBadge, formatNumber, Input, reorder, SectionLabel,
   Select, SERVICE_LEVELS, Spinner,
 } from "./ui";
 
@@ -31,26 +31,30 @@ function csvCell(value) {
   return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
 }
 
-function exportCsv(rows, service) {
+function exportCsv(rows, service, settings) {
   const headers = [
-    "Product", "SKU", "Category", "History (mo)", "Forecast",
-    `Suggested order (${service.label})`, `Safety stock (${service.label})`,
-    "Share of total", "Last year", "Change",
+    "Product", "SKU", "Category", "On hand", "On order", "Lead time (d)",
+    "Cover (d)", "Forecast", `Suggested order (${service.label})`, "Order up to",
+    "Reorder now", "Share of total", "Last year", "Change",
   ];
   const total = rows.reduce((sum, r) => sum + Number(r.Forecast || 0), 0);
   const lines = [headers.map(csvCell).join(",")];
   for (const r of rows) {
     const share = total > 0 ? ((Number(r.Forecast || 0) / total) * 100).toFixed(1) + "%" : "";
-    const rec = recommendation(r, service.z);
+    const d = reorder(r, settings, service.z);
     lines.push(
       [
         r.ProductName,
         r.Sku || "",
         r.Category || "",
-        r.HistoryMonths ?? "",
+        r.OnHand ?? "",
+        r.OnOrder ?? "",
+        d.leadTimeDays,
+        d.coverDays == null ? "" : Math.round(d.coverDays),
         r.Forecast,
-        rec.order,
-        rec.safety,
+        d.order,
+        d.orderUpTo,
+        d.hasInventory ? (d.reorderNow ? "yes" : "no") : "",
         share,
         r["Last Year Actual Sales"],
         r["% Change from Previous Year"] === "N/A" ? "N/A" : `${r["% Change from Previous Year"]}%`,
@@ -68,7 +72,7 @@ function exportCsv(rows, service) {
   URL.revokeObjectURL(url);
 }
 
-export default function ResultsTable({ rows, service, setService, grain = "monthly" }) {
+export default function ResultsTable({ rows, service, setService, settings, onInventoryChange, grain = "monthly" }) {
   const [query, setQuery] = useState("");
   const [category, setCategory] = useState("all");
   // null = use the computed default for this dataset; a real value once the
@@ -132,7 +136,7 @@ export default function ResultsTable({ rows, service, setService, grain = "month
         return totalForecast > 0 ? Number(row.Forecast || 0) / totalForecast : 0;
       }
       if (key === "__order") {
-        return recommendation(row, service.z).order;
+        return reorder(row, settings, service.z).order;
       }
       return row[key];
     };
@@ -147,7 +151,7 @@ export default function ResultsTable({ rows, service, setService, grain = "month
       else cmp = Number.isNaN(an) ? 1 : -1; // push N/A to the bottom either way
       return dir === "asc" ? cmp : -cmp;
     });
-  }, [rows, query, category, effectiveSort, totalForecast, service]);
+  }, [rows, query, category, effectiveSort, totalForecast, service, settings]);
 
   // Search/sort/filter reach every row regardless of page - only what's
   // rendered changes. Re-clamp whenever the filtered set or page size shifts
@@ -218,7 +222,7 @@ export default function ResultsTable({ rows, service, setService, grain = "month
           </Select>
         )}
         <button
-          onClick={() => exportCsv(visible, service)}
+          onClick={() => exportCsv(visible, service, settings)}
           className="inline-flex items-center gap-1.5 rounded-lg border border-[var(--line-strong)] px-3 py-2 text-xs font-medium text-[var(--ink-2)] transition-colors hover:bg-[var(--surface-2)] hover:text-[var(--ink)]"
         >
           <svg className="size-3.5" viewBox="0 0 14 14" fill="none">
@@ -279,8 +283,10 @@ export default function ResultsTable({ rows, service, setService, grain = "month
                 columnCount={columns.length}
                 showComparison={hasComparison}
                 share={totalForecast > 0 ? (Number(row.Forecast || 0) / totalForecast) * 100 : 0}
-                rec={recommendation(row, service.z)}
+                dec={reorder(row, settings, service.z)}
                 service={service}
+                settings={settings}
+                onInventoryChange={onInventoryChange}
                 isMover={moverIds.has(row.PredictionId)}
                 isOpen={expanded === row.PredictionId}
                 summary={summaries[row.PredictionId]}
@@ -345,10 +351,11 @@ export default function ResultsTable({ rows, service, setService, grain = "month
 }
 
 /* Rendered as sibling <tr>s so an expanded summary spans the full width. */
-function RowGroup({ row, columnCount, showComparison, share, rec, service, isMover, isOpen, summary, onToggle, grain = "monthly" }) {
+function RowGroup({ row, columnCount, showComparison, share, dec, service, settings, onInventoryChange, isMover, isOpen, summary, onToggle, grain = "monthly" }) {
   const changeValue = row["% Change from Previous Year"];
   const unitDelta =
     changeValue !== "N/A" ? Number(row.Forecast) - Number(row["Last Year Actual Sales"]) : null;
+  const unit = grain === "weekly" ? "wk" : "mo";
 
   return (
     <>
@@ -372,13 +379,19 @@ function RowGroup({ row, columnCount, showComparison, share, rec, service, isMov
           {row.Sku && <div className="tnum mt-0.5 text-[11px] text-[var(--ink-3)]">{row.Sku}</div>}
           <div className="mt-1 flex flex-wrap gap-1">
             <Badge>{row.Category}</Badge>
+            {dec.reorderNow && <ReorderBadge />}
             {row.HasDataGap && <GapBadge />}
             {isMover && <MoverBadge />}
           </div>
         </td>
         <td className="tnum px-3 py-2.5 text-right font-medium">{formatNumber(row.Forecast)}</td>
         <td className="tnum px-3 py-2.5 text-right font-semibold text-accent-600 dark:text-accent-400">
-          {formatNumber(rec.order)}
+          {formatNumber(dec.order)}
+          {dec.hasInventory && (
+            <div className="tnum mt-0.5 text-[11px] font-normal text-[var(--ink-3)]">
+              {dec.coverDays == null ? "" : `${Math.round(dec.coverDays)}d cover`}
+            </div>
+          )}
         </td>
         <td className="tnum px-3 py-2.5 text-right text-[var(--ink-2)]">{share.toFixed(1)}%</td>
         {showComparison && (
@@ -403,33 +416,51 @@ function RowGroup({ row, columnCount, showComparison, share, rec, service, isMov
           <td />
           <td colSpan={columnCount} className="px-3 pt-3 pb-4">
             <div className="mb-3 grid grid-cols-2 gap-px overflow-hidden rounded-lg border border-[var(--line)] bg-[var(--line)] sm:grid-cols-4">
-              <MiniStat label="Forecast" value={formatNumber(row.Forecast)} />
               <MiniStat
-                label="Confidence range"
-                value={
-                  row.ForecastLow != null && row.ForecastHigh != null
-                    ? `${formatNumber(row.ForecastLow)}–${formatNumber(row.ForecastHigh)}`
-                    : "—"
-                }
-              />
-              <MiniStat
-                label={`Order · ${service.label}`}
-                value={`${formatNumber(rec.order)}`}
-                sub={`+${formatNumber(rec.safety)} safety`}
+                label="Suggested order"
+                value={formatNumber(dec.order)}
+                sub={`order up to ${formatNumber(dec.orderUpTo)}`}
                 accent
               />
-              <MiniStat label="History" value={<HistoryValue months={row.HistoryMonths} unit={grain === "weekly" ? "wk" : "mo"} />} />
+              <MiniStat
+                label="Position"
+                value={dec.hasInventory ? formatNumber(dec.position) : "—"}
+                sub={dec.hasInventory ? "on hand + on order" : "set on-hand below"}
+              />
+              <MiniStat
+                label="Cover"
+                value={dec.coverDays == null ? "—" : `${Math.round(dec.coverDays)} days`}
+                sub={`reorder at ${formatNumber(dec.reorderPoint)}`}
+              />
+              <MiniStat label="Lead time" value={`${dec.leadTimeDays} days`} sub={`+ ${settings?.review_period_days ?? 7}d review`} />
             </div>
 
             <p className="mb-3 text-xs leading-relaxed text-[var(--ink-3)]">
-              Ordering just the{" "}
-              <span className="font-medium text-[var(--ink-2)]">{formatNumber(row.Forecast)}</span>{" "}
-              forecast would sell out about half the time, since demand lands above the forecast as
-              often as below. To stay in stock ~{service.label} of the time, add a{" "}
-              <span className="font-medium text-[var(--ink-2)]">{formatNumber(rec.safety)}</span>-unit
-              safety buffer — a suggested order of{" "}
-              <span className="font-medium text-accent-600 dark:text-accent-400">{formatNumber(rec.order)}</span>.
+              {dec.hasInventory ? (
+                <>
+                  You hold{" "}
+                  <span className="font-medium text-[var(--ink-2)]">{formatNumber(dec.position)}</span>{" "}
+                  (on hand + on order). To cover demand through the {dec.leadTimeDays}-day lead time plus
+                  the review cycle at ~{service.label} service, stock up to{" "}
+                  <span className="font-medium text-[var(--ink-2)]">{formatNumber(dec.orderUpTo)}</span> — an order of{" "}
+                  <span className="font-medium text-accent-600 dark:text-accent-400">{formatNumber(dec.order)}</span>
+                  {dec.reorderNow ? " now" : ""}.
+                </>
+              ) : (
+                <>
+                  Set this product’s <span className="font-medium text-[var(--ink-2)]">on-hand</span> below to
+                  ground the order in what you already have. Until then, it shows the full order-up-to level of{" "}
+                  <span className="font-medium text-accent-600 dark:text-accent-400">{formatNumber(dec.order)}</span>{" "}
+                  for the {dec.leadTimeDays}-day lead time at ~{service.label} service.
+                </>
+              )}
             </p>
+
+            <InventoryEditor
+              row={row}
+              defaultLeadTime={settings?.default_lead_time_days}
+              onChange={onInventoryChange}
+            />
 
             <PriceWhatIf
               elasticity={row.Elasticity}
@@ -438,6 +469,14 @@ function RowGroup({ row, columnCount, showComparison, share, rec, service, isMov
             />
 
             <ForecastBasis method={row.ForecastMethod} model={row.ForecastModel} />
+
+            <div className="mb-3 text-[11px] text-[var(--ink-3)]">
+              Forecast {formatNumber(row.Forecast)}
+              {row.ForecastLow != null && row.ForecastHigh != null
+                ? ` (range ${formatNumber(row.ForecastLow)}–${formatNumber(row.ForecastHigh)})`
+                : ""}{" "}
+              · <HistoryValue months={row.HistoryMonths} unit={unit} /> history
+            </div>
 
             <SectionLabel className="mb-2">AI analysis</SectionLabel>
             {summary?.loading && (
@@ -470,6 +509,95 @@ function MiniStat({ label, value, sub, accent }) {
       </div>
       {sub ? <div className="tnum mt-0.5 text-[10px] text-[var(--ink-3)]">{sub}</div> : null}
     </div>
+  );
+}
+
+const INV_FIELDS = [
+  { key: "on_hand", row: "OnHand", label: "On hand" },
+  { key: "on_order", row: "OnOrder", label: "On order" },
+  { key: "lead_time_days", row: "LeadTimeDays", label: "Lead time (d)" },
+  { key: "unit_cost", row: "UnitCost", label: "Unit cost" },
+  { key: "moq", row: "MOQ", label: "MOQ" },
+  { key: "case_pack", row: "CasePack", label: "Case pack" },
+];
+
+// Per-SKU inventory editor - edits persist to the catalog and recompute the
+// order instantly (no re-forecast). An empty field clears that value.
+function InventoryEditor({ row, defaultLeadTime, onChange }) {
+  const key = row.Sku || row.ProductName;
+  return (
+    <div className="mb-3 rounded-lg border border-[var(--line)] bg-[var(--surface-2)] px-3 py-2.5">
+      <div className="flex items-baseline justify-between">
+        <SectionLabel>Inventory</SectionLabel>
+        {row.InventoryUpdatedAt && (
+          <span className="text-[10px] text-[var(--ink-3)]">
+            on-hand as of {new Date(row.InventoryUpdatedAt).toLocaleDateString()}
+          </span>
+        )}
+      </div>
+      <div className="mt-2 grid grid-cols-3 gap-2 sm:grid-cols-6">
+        {INV_FIELDS.map((f) => (
+          <InvInput
+            key={f.key}
+            label={f.label}
+            value={row[f.row]}
+            placeholder={
+              f.key === "lead_time_days" && row[f.row] == null ? `${defaultLeadTime ?? ""}` : ""
+            }
+            onCommit={(v) => onChange?.(key, { [f.key]: v })}
+          />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function InvInput({ label, value, placeholder, onCommit }) {
+  const [draft, setDraft] = useState(value == null ? "" : String(value));
+  useEffect(() => setDraft(value == null ? "" : String(value)), [value]);
+  const commit = () => {
+    const cur = value == null ? "" : String(value);
+    if (draft === cur) return;
+    if (draft === "") return onCommit(""); // clear the value
+    const n = Number(draft);
+    if (Number.isFinite(n) && n >= 0) onCommit(n);
+    else setDraft(cur);
+  };
+  return (
+    <label className="block">
+      <span className="mb-1 block text-[10px] font-medium tracking-wide text-[var(--ink-3)] uppercase">
+        {label}
+      </span>
+      <input
+        type="number"
+        min="0"
+        value={draft}
+        placeholder={placeholder}
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={commit}
+        onClick={(e) => e.stopPropagation()}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") e.currentTarget.blur();
+        }}
+        className="tnum w-full rounded-md border border-[var(--line-strong)] bg-[var(--surface)] px-2 py-1 text-right text-sm text-[var(--ink)] outline-none focus:border-accent-500"
+      />
+    </label>
+  );
+}
+
+function ReorderBadge() {
+  return (
+    <span
+      title="Stock is at or below the reorder point — order now"
+      className="inline-flex items-center gap-1 rounded-md border border-neg-500/40 bg-neg-500/10 px-1.5 py-0.5 text-[11px] font-medium text-neg-500 dark:text-neg-400"
+    >
+      <svg className="size-3" viewBox="0 0 14 14" fill="none">
+        <path d="M7 1.5 13 12.5H1L7 1.5Z" stroke="currentColor" strokeWidth="1.3" strokeLinejoin="round" />
+        <path d="M7 5.5v3" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
+        <circle cx="7" cy="10.2" r="0.6" fill="currentColor" />
+      </svg>
+      Reorder now
+    </span>
   );
 }
 

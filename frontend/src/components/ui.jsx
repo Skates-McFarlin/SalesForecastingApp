@@ -179,3 +179,49 @@ export function recommendation(row, z) {
   const safety = z * sigma;
   return { order: Math.round(forecast + safety), safety: Math.round(safety) };
 }
+
+// Round a raw order up to the case pack, then up to the minimum order quantity.
+function snapOrder(qty, moq, casePack) {
+  if (qty <= 0) return 0;
+  if (casePack && casePack > 0) qty = Math.ceil(qty / casePack) * casePack;
+  if (moq && qty < moq) {
+    qty = moq;
+    if (casePack && casePack > 0) qty = Math.ceil(qty / casePack) * casePack;
+  }
+  return qty;
+}
+
+// Grounded reorder decision (Phase 2) - the client-side mirror of the backend's
+// reorder_policy(), so editing on-hand / lead time / service level updates the
+// recommendation instantly without re-forecasting. Periodic-review base stock:
+// order up to (demand over lead time + review period + safety), net of the stock
+// you already have and have coming. Keep in lock-step with inventory_controller.
+export function reorder(row, settings, z) {
+  const r = Math.max(0, Number(row.DailyRate || 0));
+  const s = Math.max(0, Number(row.DailySigma || 0));
+  const L = Math.max(0, Number(row.LeadTimeDays ?? settings?.default_lead_time_days ?? 14));
+  const R = Math.max(1, Number(settings?.review_period_days ?? 7));
+  const P = L + R;
+
+  const hasInventory = row.OnHand != null && row.OnHand !== "";
+  const position = Number(row.OnHand || 0) + Number(row.OnOrder || 0);
+
+  const orderUpTo = r * P + z * s * Math.sqrt(P);
+  const reorderPoint = r * L + z * s * Math.sqrt(L);
+  const safety = z * s * Math.sqrt(P);
+  const order = snapOrder(Math.max(0, orderUpTo - position), Number(row.MOQ) || 0, Number(row.CasePack) || 0);
+  const coverDays = hasInventory && r > 0 ? Number(row.OnHand) / r : null;
+
+  return {
+    order: Math.round(order),
+    safety: Math.round(safety),
+    orderUpTo: Math.round(orderUpTo),
+    reorderPoint: Math.round(reorderPoint),
+    position: Math.round(position),
+    leadTimeDays: L,
+    coverDays,
+    // Only flag/gate on stock position when we actually know the on-hand.
+    reorderNow: hasInventory ? position <= reorderPoint : false,
+    hasInventory,
+  };
+}

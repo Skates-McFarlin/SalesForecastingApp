@@ -1,16 +1,21 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { fetchCatalog, importSales, forecastCatalog, scoreCatalogAccuracy } from "./api";
-import { catalogRange, cmp, dateBounds, monthRangeForYear } from "./dates";
+import {
+  fetchCatalog, importSales, forecastCatalog, scoreCatalogAccuracy,
+  fetchSettings, updateSettings, updateProductInventory,
+} from "./api";
+import { catalogRange, cmp, dateBounds, durationThrough, monthRangeForYear } from "./dates";
 import AccuracyResults from "./components/AccuracyResults";
 import ControlPanel from "./components/ControlPanel";
 import ForecastChart from "./components/ForecastChart";
 import KpiStrip from "./components/KpiStrip";
+import Ledger from "./components/Ledger";
 import ResultsTable from "./components/ResultsTable";
 import { Card, ErrorNote, SectionLabel, Select, SERVICE_LEVELS } from "./components/ui";
 
 const TABS = [
   { id: "forecast", label: "Forecast" },
   { id: "accuracy", label: "Accuracy" },
+  { id: "ledger", label: "Track record" },
 ];
 
 const emptyRun = { rows: null, error: null, busy: false };
@@ -24,14 +29,22 @@ export default function App() {
   const [year, setYear] = useState(new Date().getFullYear());
   const [month, setMonth] = useState(1);
   const [duration, setDuration] = useState(12);
+  // Optional specific future window on the Forecast tab. null = just use the
+  // length dropdown; { from: {y,m}, through: {y,m} } = report only that window
+  // (the full path from the data edge is still forecast to reach it).
+  const [fcWindow, setFcWindow] = useState(null);
 
   const [forecast, setForecast] = useState(emptyRun);
   const [accuracy, setAccuracy] = useState(emptyRun);
   const [service, setService] = useState(SERVICE_LEVELS[1]); // 95% default
+  const [settings, setSettings] = useState(null); // inventory defaults (Phase 2)
   const [catalog, setCatalog] = useState(null); // stored business summary
   const [importing, setImporting] = useState(false);
   const [dataRange, setDataRange] = useState(null); // catalog's date coverage
   const [elapsed, setElapsed] = useState(0);
+  // Bumped after a forecast or a sync so the Track record tab refetches the
+  // ledger (a new run was recorded, or new sales may have graded old ones).
+  const [ledgerToken, setLedgerToken] = useState(0);
   const abortRef = useRef(null);
 
   useEffect(() => {
@@ -51,8 +64,44 @@ export default function App() {
 
   useEffect(() => {
     refreshCatalog();
+    // Inventory defaults; sync the service-level control to the saved default.
+    fetchSettings()
+      .then((s) => {
+        setSettings(s);
+        const match = SERVICE_LEVELS.find((lvl) => lvl.value === s.service_level);
+        if (match) setService(match);
+      })
+      .catch(() => setSettings({
+        default_lead_time_days: 14, review_period_days: 7,
+        service_level: 0.95, holding_cost_rate: 0.25,
+      }));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Persist an inventory-defaults change and reflect it immediately.
+  const changeSettings = (patch) => {
+    setSettings((s) => ({ ...s, ...patch }));
+    updateSettings(patch).catch(() => {});
+  };
+
+  // Backend inventory field -> the capitalized key the forecast rows carry.
+  const INV_TO_ROW = {
+    on_hand: "OnHand", on_order: "OnOrder", lead_time_days: "LeadTimeDays",
+    unit_cost: "UnitCost", moq: "MOQ", case_pack: "CasePack",
+  };
+  // Edit one product's inventory: update the row locally (so the reorder math
+  // recomputes instantly) and persist to the catalog.
+  const changeInventory = (key, patch) => {
+    const rowPatch = {};
+    for (const [k, v] of Object.entries(patch)) {
+      rowPatch[INV_TO_ROW[k] ?? k] = v === "" ? null : v;
+    }
+    setForecast((f) => ({
+      ...f,
+      rows: f.rows?.map((r) => ((r.Sku || r.ProductName) === key ? { ...r, ...rowPatch } : r)),
+    }));
+    updateProductInventory(key, patch).catch(() => {});
+  };
 
   const active = tab === "forecast" ? forecast : accuracy;
   const setActive = tab === "forecast" ? setForecast : setAccuracy;
@@ -64,9 +113,20 @@ export default function App() {
   // The catalog's grain (weekly for daily data, else monthly) drives whether the
   // horizon is counted in weeks or months.
   const grain = catalog?.grain === "weekly" ? "weekly" : "monthly";
+  // Forecasts anchor at the catalog's data edge (the backend derives this); the
+  // UI shows it and turns a "through <month>" target into a horizon length.
+  const origin = catalog?.forecast_origin ?? null;
   useEffect(() => {
     setDuration(grain === "weekly" ? 8 : 12);
+    setFcWindow(null); // a window/length doesn't carry across grains
   }, [grain]);
+  // Effective horizon for the Forecast tab: a window forecasts far enough to
+  // reach its "through" month; otherwise the length dropdown applies. The window
+  // start (its "from" month, as an ISO date) narrows the reported result.
+  const forecastDuration = fcWindow ? durationThrough(origin, fcWindow.through, grain) : duration;
+  const forecastWindowStart = fcWindow
+    ? `${fcWindow.from.y}-${String(fcWindow.from.m).padStart(2, "0")}-01`
+    : null;
 
   // A freshly detected file snaps the start date to a sensible default.
   useEffect(() => {
@@ -105,15 +165,26 @@ export default function App() {
 
   const run = async () => {
     if (!catalog || catalog.empty) return;
-    const startDate = `${year}-${String(month).padStart(2, "0")}-01`;
     const controller = new AbortController();
     abortRef.current = controller;
     setActive({ rows: null, error: null, busy: true });
 
-    const request = tab === "forecast" ? forecastCatalog : scoreCatalogAccuracy;
     try {
-      const rows = await request(startDate, duration, { signal: controller.signal });
+      let rows;
+      if (tab === "forecast") {
+        // Always forward from the data edge; a window narrows what's reported.
+        rows = await forecastCatalog(forecastDuration, {
+          windowStart: forecastWindowStart,
+          signal: controller.signal,
+        });
+      } else {
+        // Accuracy backtests a chosen in-history window.
+        const startDate = `${year}-${String(month).padStart(2, "0")}-01`;
+        rows = await scoreCatalogAccuracy(startDate, duration, { signal: controller.signal });
+      }
       setActive({ rows, error: null, busy: false });
+      // A forecast records a run in the ledger - refresh the track record.
+      if (tab === "forecast") setLedgerToken((t) => t + 1);
     } catch (err) {
       if (err.name === "AbortError") {
         setActive({ rows: null, error: null, busy: false });
@@ -132,6 +203,8 @@ export default function App() {
     try {
       await importSales(f);
       await refreshCatalog();
+      // Synced sales may have graded past forecasts - refresh the track record.
+      setLedgerToken((t) => t + 1);
     } catch (err) {
       setActive({ ...active, error: err.message });
     } finally {
@@ -192,6 +265,11 @@ export default function App() {
             onCancel={() => abortRef.current?.abort()}
             busy={active.busy}
             elapsed={elapsed}
+            mode={tab}
+            origin={origin}
+            fcWindow={fcWindow}
+            onWindow={setFcWindow}
+            forecastDuration={forecastDuration}
             submitLabel={tab === "forecast" ? "Generate forecast" : "Score accuracy"}
             busyLabel={tab === "forecast" ? "Forecasting…" : "Scoring accuracy…"}
           />
@@ -206,13 +284,15 @@ export default function App() {
             </div>
           )}
 
-          {active.busy && <RunningState tab={tab} />}
+          {tab === "ledger" && <Ledger reloadToken={ledgerToken} />}
 
-          {!active.busy && !active.rows && !active.error && (
+          {tab !== "ledger" && active.busy && <RunningState tab={tab} />}
+
+          {tab !== "ledger" && !active.busy && !active.rows && !active.error && (
             <EmptyState tab={tab} hasCatalog={!!catalog && !catalog.empty} />
           )}
 
-          {!active.busy && active.rows?.length === 0 && (
+          {tab !== "ledger" && !active.busy && active.rows?.length === 0 && (
             <Card className="p-10 text-center text-sm text-[var(--ink-3)]">
               No products could be forecast from your catalog. Import a file with a{" "}
               <span className="font-medium text-[var(--ink-2)]">Product Name</span> column and
@@ -223,32 +303,57 @@ export default function App() {
 
           {!active.busy && active.rows?.length > 0 && tab === "forecast" && (
             <div className="flex min-h-0 flex-col gap-5">
-              <div className="flex items-center justify-between gap-3">
+              <div className="flex flex-wrap items-center justify-between gap-3">
                 <SectionLabel>Inventory plan</SectionLabel>
-                <label className="inline-flex items-center gap-1.5 text-xs text-[var(--ink-3)]">
-                  <span title="Probability of not stocking out. Higher service level = more safety stock.">
-                    Service level
-                  </span>
-                  <Select
-                    className="w-auto py-1"
-                    value={service.value}
-                    onChange={(e) =>
-                      setService(SERVICE_LEVELS.find((s) => s.value === Number(e.target.value)))
-                    }
-                  >
-                    {SERVICE_LEVELS.map((s) => (
-                      <option key={s.value} value={s.value}>
-                        {s.label}
-                      </option>
-                    ))}
-                  </Select>
-                </label>
+                <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5">
+                  <NumField
+                    label="Lead time"
+                    title="Default supplier resupply time, in days. Products can override this."
+                    value={settings?.default_lead_time_days ?? 14}
+                    suffix="d"
+                    onCommit={(v) => changeSettings({ default_lead_time_days: v })}
+                  />
+                  <NumField
+                    label="Review every"
+                    title="How often you reorder, in days — the order must cover lead time plus this."
+                    value={settings?.review_period_days ?? 7}
+                    suffix="d"
+                    onCommit={(v) => changeSettings({ review_period_days: v })}
+                  />
+                  <label className="inline-flex items-center gap-1.5 text-xs text-[var(--ink-3)]">
+                    <span title="Probability of not stocking out. Higher service level = more safety stock.">
+                      Service level
+                    </span>
+                    <Select
+                      className="w-auto py-1"
+                      value={service.value}
+                      onChange={(e) => {
+                        const lvl = SERVICE_LEVELS.find((s) => s.value === Number(e.target.value));
+                        setService(lvl);
+                        changeSettings({ service_level: lvl.value });
+                      }}
+                    >
+                      {SERVICE_LEVELS.map((s) => (
+                        <option key={s.value} value={s.value}>
+                          {s.label}
+                        </option>
+                      ))}
+                    </Select>
+                  </label>
+                </div>
               </div>
-              <KpiStrip rows={active.rows} service={service} />
+              <KpiStrip rows={active.rows} service={service} settings={settings} />
               <Card className="p-4">
-                <ForecastChart rows={active.rows} service={service} />
+                <ForecastChart rows={active.rows} service={service} settings={settings} />
               </Card>
-              <ResultsTable rows={active.rows} service={service} setService={setService} grain={grain} />
+              <ResultsTable
+                rows={active.rows}
+                service={service}
+                setService={setService}
+                settings={settings}
+                onInventoryChange={changeInventory}
+                grain={grain}
+              />
             </div>
           )}
 
@@ -320,6 +425,35 @@ function EmptyState({ tab, hasCatalog }) {
         </p>
       </div>
     </div>
+  );
+}
+
+// Compact numeric field for the inventory defaults - commits on blur/Enter so a
+// keystroke mid-typing doesn't fire a save (and re-forecast-free recompute).
+function NumField({ label, title, value, suffix, onCommit }) {
+  const [draft, setDraft] = useState(String(value ?? ""));
+  useEffect(() => setDraft(String(value ?? "")), [value]);
+  const commit = () => {
+    const n = Number(draft);
+    if (Number.isFinite(n) && n >= 0 && n !== Number(value)) onCommit(Math.round(n));
+    else setDraft(String(value ?? ""));
+  };
+  return (
+    <label className="inline-flex items-center gap-1.5 text-xs text-[var(--ink-3)]" title={title}>
+      <span>{label}</span>
+      <span className="inline-flex items-center rounded-md border border-[var(--line-strong)] bg-[var(--surface)] focus-within:border-accent-500">
+        <input
+          type="number"
+          min="0"
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onBlur={commit}
+          onKeyDown={(e) => e.key === "Enter" && e.currentTarget.blur()}
+          className="tnum w-12 bg-transparent px-1.5 py-1 text-right text-[var(--ink)] outline-none"
+        />
+        {suffix ? <span className="pr-1.5 text-[var(--ink-3)]">{suffix}</span> : null}
+      </span>
+    </label>
   );
 }
 

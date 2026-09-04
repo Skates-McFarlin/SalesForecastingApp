@@ -1,5 +1,6 @@
 import json
 import io
+import math
 from datetime import datetime
 import re
 import threading
@@ -19,6 +20,7 @@ from app.extensions import db
 from app.forecasting import selector, elasticity as elasticity_mod
 from app.forecasting.base import (
     aggregate_interval, future_index, monthly_actuals, period_actuals, MONTHLY,
+    Forecast,
 )
 from huggingface_hub import hf_hub_download
 import os
@@ -664,8 +666,65 @@ def _prior_index_from_season(season_tag):
     return {m: raw[m] / mean for m in range(1, 13)}
 
 
-def predict_sales_forecasting(data, start_date, duration):
-    """Forecast from an uploaded file (stores the file blob, then forecasts)."""
+def _forward_window(df, grain, duration, window_start=None):
+    """The forward-forecast periods (from the data's edge) and which of them a
+    summary covers.
+
+    The origin is ALWAYS the period after the data's last observation - that's
+    where the engine forecasts from, so trusting a caller-supplied start would
+    just relabel the same numbers (see project-forecast-edge-anchor). An optional
+    window_start narrows the reported window to a specific future slice (e.g. a
+    single quarter); the full path edge->window-end is still forecast to reach it.
+    Returns (origin_str, future_dates, win_mask).
+    """
+    data_edge = pd.to_datetime(df["ds"]).max()
+    origin_ts = pd.date_range(start=data_edge, periods=2, freq=grain.freq)[1]
+    future_dates = grain.future_index(origin_ts.strftime("%Y-%m-%d"), duration)
+    if window_start is not None:
+        mask = np.array([d >= pd.Timestamp(window_start) for d in future_dates])
+        if not mask.any():  # window past the horizon end -> fall back to full path
+            mask = np.ones(len(future_dates), dtype=bool)
+    else:
+        mask = np.ones(len(future_dates), dtype=bool)
+    return origin_ts.strftime("%Y-%m-%d"), future_dates, mask
+
+
+# Days per period, and how many near-term periods define the "current" demand
+# rate used for reorder decisions (a local rate from the edge, not the whole
+# horizon - you reorder to cover the next lead time starting now).
+_PERIOD_DAYS = {"monthly": 365.25 / 12.0, "weekly": 7.0}
+_NEAR_PERIODS = {"monthly": 3, "weekly": 6}
+_Z80 = 1.2816  # half-width of the ~80% interval, in sigmas
+
+
+def _near_term_daily(fc, grain):
+    """Current daily demand rate and its daily sigma, from the near-term forecast.
+
+    The reorder decision needs demand per day over the next lead time; the
+    forecast is per-period (weekly/monthly), so take the first few edge-anchored
+    periods as a stable local rate and convert to a per-day figure. Returns
+    (daily_rate, daily_sigma)."""
+    period_days = _PERIOD_DAYS.get(grain.label, 30.44)
+    k = min(len(fc.yhat), _NEAR_PERIODS.get(grain.label, 3))
+    if k <= 0:
+        return 0.0, 0.0
+    yhat = np.asarray(fc.yhat, dtype=float)[:k]
+    high = np.asarray(fc.high, dtype=float)[:k]
+    low = np.asarray(fc.low, dtype=float)[:k]
+    daily_rate = float(np.mean(yhat)) / period_days
+    period_sigma = np.maximum(0.0, (high - low) / (2 * _Z80))
+    # A period's spread is sqrt(period_days) of a day's, if within-period days are
+    # independent - so the per-day sigma is the per-period sigma scaled down.
+    daily_sigma = float(np.mean(period_sigma)) / math.sqrt(period_days)
+    return max(0.0, daily_rate), max(0.0, daily_sigma)
+
+
+def predict_sales_forecasting(data, duration):
+    """Forecast from an uploaded file (stores the file blob, then forecasts).
+
+    Forecasts forward from the uploaded data's edge (the origin is derived from
+    the data, not picked) - same contract as the catalog path.
+    """
     file_data = data.read()
 
     file_record = File(filename=data.filename, filedata=file_data)
@@ -676,37 +735,95 @@ def predict_sales_forecasting(data, start_date, duration):
 
     json_data, extra_context_by_group = preprocess_data(data)
     return _forecast_core(
-        json_data, extra_context_by_group, start_date, duration, file_id=file_record.id
+        json_data, extra_context_by_group, duration, file_id=file_record.id
     )
 
 
-def predict_from_catalog(start_date, duration):
-    """Forecast the persistent catalog - the stored business is the source of
-    truth, so no upload is needed. Grain (weekly for daily data, else monthly)
-    is detected from the catalog."""
-    from app.controllers.catalog_controller import catalog_to_json_data
+def predict_from_catalog(duration, window_start=None):
+    """Forecast the persistent catalog forward from its data edge - the stored
+    business is the source of truth, so no upload is needed. Grain (weekly for
+    daily data, else monthly) is detected from the catalog.
+
+    The forecast origin is ALWAYS the period after the catalog's last period, not
+    a user-picked date: the engine forecasts the periods after each series' last
+    observation, so anchoring anywhere else would just relabel those same numbers
+    onto the wrong window. `duration` is how many periods forward to forecast (the
+    UI turns a "through <month>" destination into that count), and an optional
+    `window_start` narrows the reported result to a specific future slice (e.g.
+    just Q4) - the full path from the edge is still forecast to reach it.
+
+    The forecast is also snapshotted into the decision/outcome ledger (Phase 1),
+    so the app can later grade this recommendation against what actually sells.
+    """
+    from app.controllers.catalog_controller import catalog_to_json_data, catalog_summary
+    from app.controllers import ledger_controller
+    from app.controllers.inventory_controller import inventory_by_key
 
     json_data, extra_context_by_group, grain = catalog_to_json_data()
     if not json_data:
         return json.dumps([])
-    return _forecast_core(
-        json_data, extra_context_by_group, start_date, duration, file_id=None, grain=grain
+
+    result = _forecast_core(
+        json_data, extra_context_by_group, duration,
+        file_id=None, grain=grain, window_start=window_start,
+        inventory_by_key=inventory_by_key(),
     )
 
+    # Record the recommendation (best-effort; never blocks the forecast). Every
+    # catalog forecast is a genuine forward forecast (anchored at the edge), so
+    # it's always a trackable decision - logged over the reported window.
+    try:
+        df = pd.DataFrame(json_data)
+        _, future_dates, win_mask = _forward_window(df, grain, duration, window_start)
+        window_dates = future_dates[win_mask]
+        run_start = window_dates.min().date().isoformat()
+        run_horizon = int(win_mask.sum())
+        summary = catalog_summary()
+        ledger_controller.record_run(
+            json.loads(result), run_start, run_horizon, grain,
+            catalog_products=summary.get("products"),
+            catalog_date_to=summary.get("date_to"),
+        )
+    except Exception:  # noqa: BLE001 - bookkeeping must not break the forecast
+        pass
 
-def _forecast_core(json_data, extra_context_by_group, start_date, duration,
-                   file_id=None, grain=MONTHLY):
+    return result
+
+
+def _forecast_core(json_data, extra_context_by_group, duration,
+                   file_id=None, grain=MONTHLY, window_start=None,
+                   inventory_by_key=None):
     """Shared forecasting pipeline over already-parsed data, whichever source it
-    came from (an upload or the stored catalog) and at whichever grain."""
+    came from (an upload or the stored catalog) and at whichever grain.
+
+    Always forecasts forward from the data's edge - the origin is derived from
+    the data, never supplied by a caller, because the statistical/foundation
+    members forecast the periods after each series' last observation regardless
+    (see project-forecast-edge-anchor). `duration` periods are forecast; an
+    optional `window_start` reports only the forward periods on/after it (the
+    full path edge->window-end is still forecast to reach it), so a user can pull
+    out a specific future window such as a single quarter.
+    """
     forecast_periods = duration
-    forecast_start_date = start_date
-    # The same window one year back, for the year-over-year comparison.
-    last_year_start = pd.Timestamp(start_date) - pd.DateOffset(years=1)
 
     df = pd.DataFrame(json_data)
 
     # Ensure the date column is in datetime format
     df["ds"] = pd.to_datetime(df["ds"], format="%Y-%m-%d")
+
+    # Forward origin from the data edge + which forward periods to report.
+    forecast_start_date, future_dates, win_mask = _forward_window(
+        df, grain, forecast_periods, window_start
+    )
+    window_dates = future_dates[win_mask]
+    window_len = int(win_mask.sum())
+    # The same window one year back, on-grid, for the year-over-year comparison.
+    ly_keys = {
+        grain.period_key(d)
+        for d in grain.future_index(
+            (window_dates.min() - pd.DateOffset(years=1)).strftime("%Y-%m-%d"), window_len
+        )
+    }
 
     # Group by SKU when the file provides one (each SKU forecast
     # separately - two SKUs sharing a generic product name, e.g. two
@@ -800,8 +917,11 @@ def _forecast_core(json_data, extra_context_by_group, start_date, duration,
         df, group_col, list(products), forecast_start_date, forecast_periods,
         category_by_group, own_months_by_group, seasonal_index_by_group, grain,
     )
-    end_ts = grain.future_index(forecast_start_date, forecast_periods).max()
-    end_date = (end_ts + pd.offsets.MonthEnd(0)) if grain is MONTHLY else end_ts
+    # Label/score the reported window (the whole horizon unless narrowed).
+    window_start_ts = window_dates.min()
+    window_end_ts = window_dates.max()
+    end_date = (window_end_ts + pd.offsets.MonthEnd(0)) if grain is MONTHLY else window_end_ts
+    duration_label = f"{window_start_ts.date()} - {end_date.date()}"
 
     # Price elasticity per SKU (only when the file carries monthly prices);
     # powers the "what-if a price change" figure client-side.
@@ -821,21 +941,33 @@ def _forecast_core(json_data, extra_context_by_group, start_date, duration,
         extra_context = extra_context_by_group.get(group_key, {})
 
         model_label, fc = forecasts[group_key]
-        sum_forecast_now = fc.total
-        forecast_low, forecast_high = aggregate_interval(fc)
+        # Current daily demand rate/spread (near-term, from the edge) - the
+        # ingredients the client (and the simulator) turn into a grounded reorder
+        # decision. Computed from the full edge-anchored forecast, not the display
+        # window: you reorder to cover the next lead time starting now.
+        daily_rate, daily_sigma = _near_term_daily(fc, grain)
+        # Slice the full-horizon forecast to the reported window (default = the
+        # whole horizon). Summing/interval/order all use the windowed values, so
+        # a narrowed request (e.g. just Q4) reports that window's numbers.
+        fc_win = Forecast(
+            yhat=np.asarray(fc.yhat)[win_mask],
+            low=np.asarray(fc.low)[win_mask],
+            high=np.asarray(fc.high)[win_mask],
+        )
+        sum_forecast_now = fc_win.total
+        forecast_low, forecast_high = aggregate_interval(fc_win)
 
-        ly_keys = {grain.period_key(d) for d in grain.future_index(last_year_start, forecast_periods)}
         in_window = df_product["ds"].apply(lambda d: grain.period_key(d) in ly_keys)
 
         actual_sales_values = df_product.loc[in_window, "y"].tolist()
         # Require the full comparison window, not just some overlap. A
-        # 24-month forecast whose "last year" window only has 12 real months
+        # 24-period forecast whose "last year" window only has 12 real periods
         # (the other 12 fall past the file's history) used to silently sum
         # just those 12 and present it as if it were a matching period -
-        # comparing a 24-month forecast against half a lookback window,
+        # comparing a 24-period forecast against half a lookback window,
         # which inflated every "% change" by roughly 2x. Partial coverage is
         # treated the same as no coverage: N/A, not a misleading number.
-        has_full_comparison = len(actual_sales_values) == forecast_periods
+        has_full_comparison = len(actual_sales_values) == window_len
         actual_last_year_sales = sum(actual_sales_values) if has_full_comparison else 0
 
         # Calculate percentage change correctly
@@ -857,7 +989,7 @@ def _forecast_core(json_data, extra_context_by_group, start_date, duration,
             file_id=file_id,
             product_name=product,
             sku=sku,
-            duration=f"{forecast_start_date} - {end_date.date()}",
+            duration=duration_label,
             forecast=str(round(sum_forecast_now)),
             actual_sales=str(round(actual_last_year_sales)),
             percent_change=str(
@@ -887,7 +1019,7 @@ def _forecast_core(json_data, extra_context_by_group, start_date, duration,
                 "PredictionId": prediction.id,
                 "ProductName": product,
                 "Sku": sku,
-                "Duration": f"{forecast_start_date} - {end_date.date()}",
+                "Duration": duration_label,
                 "Forecast": round(sum_forecast_now),
                 "ForecastLow": round(forecast_low),
                 "ForecastHigh": round(forecast_high),
@@ -907,6 +1039,12 @@ def _forecast_core(json_data, extra_context_by_group, start_date, duration,
                     else None
                 ),
                 "ElasticitySource": elasticity_by_group.get(group_key, (None, None))[1],
+                # Reorder ingredients (Phase 2): a per-day demand rate + spread the
+                # client turns into a grounded order, plus this SKU's inventory
+                # state (None for the upload path, which has no catalog).
+                "DailyRate": round(daily_rate, 4),
+                "DailySigma": round(daily_sigma, 4),
+                **((inventory_by_key or {}).get(group_key, {})),
             }
         )
 

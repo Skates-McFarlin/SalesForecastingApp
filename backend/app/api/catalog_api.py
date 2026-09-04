@@ -34,14 +34,20 @@ def post_import():
 
 @catalog_api_bp.route("/forecast", methods=["POST"])
 def post_forecast():
-    """Forecast the stored catalog - no upload needed (Phase 0c)."""
+    """Forecast the stored catalog forward from its data edge (Phase 0c).
+
+    Takes only a horizon (`duration`); the origin is always the catalog's edge
+    (see predict_from_catalog), so there's no start date to pick or mis-align.
+    """
     try:
         body = request.get_json(silent=True) or request.form
-        start_date = body.get("start_date")
         duration = body.get("duration")
-        if not start_date or not duration:
-            return jsonify({"error": "Missing start_date or duration"}), 400
-        return jsonify(json.loads(predict_from_catalog(start_date, int(duration)))), 201
+        if not duration:
+            return jsonify({"error": "Missing duration"}), 400
+        # Optional: report only a specific future window (e.g. just Q4). The full
+        # path from the data edge is still forecast to reach it.
+        window_start = body.get("window_start") or None
+        return jsonify(json.loads(predict_from_catalog(int(duration), window_start))), 201
     except Exception as e:  # noqa: BLE001
         return jsonify({"error": str(e)}), 500
 

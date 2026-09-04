@@ -46,6 +46,24 @@ export function dateBounds(range, tab) {
   return { min: dataStart, max: addMonths(dataEnd, 60), def: addMonths(dataEnd, 1) };
 }
 
+// How many grain periods it takes to forecast from the data edge (origin, a
+// YYYY-MM-DD string) THROUGH the end of a target { y, m } month. Used by the
+// Forecast tab's optional "forecast through <month>" destination, which the
+// engine reaches by forecasting the whole contiguous path from the edge.
+export function durationThrough(originISO, target, grain) {
+  if (!originISO || !target) return null;
+  const [oy, om] = originISO.split("-").map(Number); // origin period date
+  if (grain === "weekly") {
+    const origin = new Date(oy, om - 1, originISO.split("-")[2] ? Number(originISO.split("-")[2]) : 1);
+    const end = new Date(target.y, target.m, 0); // last day of the target month
+    const weeks = Math.ceil((end - origin) / (7 * 86400000)) + 1;
+    return Math.max(1, weeks);
+  }
+  // monthly: count month-starts from the origin month through the target month
+  const months = target.y * 12 + (target.m - 1) - (oy * 12 + (om - 1)) + 1;
+  return Math.max(1, months);
+}
+
 // The months selectable for a given year within a window (both dropdowns share
 // one window, so only the edge years are partially disabled).
 export function monthRangeForYear(bounds, year) {

@@ -8,25 +8,26 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
-import { formatNumber, recommendation, SectionLabel } from "./ui";
+import { formatNumber, reorder, SectionLabel } from "./ui";
 
 const TOP_N = 12;
 
-// The chart tells the inventory story: for the biggest lines, how much to order
-// split into the base forecast and the safety-stock buffer on top (which grows
-// with uncertainty and the service level). Stacked, the bar height IS the
-// suggested order.
-export default function ForecastChart({ rows, service }) {
+// The chart tells the inventory story: for the lines needing the most, the stock
+// you already have (on hand + on order) plus the suggested order on top. Stacked,
+// the bar height is the order-up-to target; the accent segment is what to buy.
+export default function ForecastChart({ rows, service, settings }) {
   const data = useMemo(() => {
     return [...rows]
       .map((r) => {
-        const forecast = Number(r.Forecast || 0);
-        const rec = recommendation(r, service.z);
-        return { name: r.ProductName, sku: r.Sku, forecast, safety: rec.safety, order: rec.order };
+        const d = reorder(r, settings, service.z);
+        return {
+          name: r.ProductName, sku: r.Sku,
+          position: d.position, order: d.order, orderUpTo: d.orderUpTo,
+        };
       })
       .sort((a, b) => b.order - a.order)
       .slice(0, TOP_N);
-  }, [rows, service]);
+  }, [rows, service, settings]);
 
   if (!data.length) return null;
 
@@ -62,13 +63,18 @@ export default function ForecastChart({ rows, service }) {
             />
             <Tooltip
               cursor={{ fill: "color-mix(in srgb, var(--ink) 6%, transparent)" }}
-              content={<ChartTooltip service={service} />}
+              content={<ChartTooltip />}
             />
-            <Bar dataKey="forecast" stackId="a" fill="var(--color-accent-500)" isAnimationActive={false} />
             <Bar
-              dataKey="safety"
+              dataKey="position"
               stackId="a"
-              fill="color-mix(in srgb, var(--color-accent-500) 32%, transparent)"
+              fill="color-mix(in srgb, var(--ink) 20%, transparent)"
+              isAnimationActive={false}
+            />
+            <Bar
+              dataKey="order"
+              stackId="a"
+              fill="var(--color-accent-500)"
               radius={[3, 3, 0, 0]}
               isAnimationActive={false}
             />
@@ -77,8 +83,8 @@ export default function ForecastChart({ rows, service }) {
       </div>
 
       <div className="mt-2 flex items-center gap-4 text-xs text-[var(--ink-3)]">
-        <Swatch color="var(--color-accent-500)" label="Forecast demand" />
-        <Swatch color="color-mix(in srgb, var(--color-accent-500) 32%, transparent)" label={`Safety stock (${service.label})`} />
+        <Swatch color="color-mix(in srgb, var(--ink) 20%, transparent)" label="On hand + on order" />
+        <Swatch color="var(--color-accent-500)" label="Suggested order" />
       </div>
     </div>
   );
@@ -93,14 +99,14 @@ function Swatch({ color, label }) {
   );
 }
 
-function ChartTooltip({ active, payload, label, service }) {
+function ChartTooltip({ active, payload, label }) {
   if (!active || !payload?.length) return null;
   const d = payload[0].payload;
   return (
     <div className="rounded-lg border border-[var(--line)] bg-[var(--surface)] px-3 py-2 shadow-lg">
       <div className="mb-1 text-xs font-semibold">{label}</div>
-      <Row label="Forecast" value={d.forecast} />
-      <Row label={`Safety (${service.label})`} value={d.safety} />
+      <Row label="On hand + on order" value={d.position} />
+      <Row label="Order up to" value={d.orderUpTo} />
       <div className="mt-1 border-t border-[var(--line)] pt-1">
         <Row label="Suggested order" value={d.order} strong />
       </div>

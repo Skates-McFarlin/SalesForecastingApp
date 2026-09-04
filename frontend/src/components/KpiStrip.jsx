@@ -1,20 +1,22 @@
 import { useMemo } from "react";
-import { formatNumber, recommendation, SectionLabel } from "./ui";
+import { formatNumber, reorder, SectionLabel } from "./ui";
 
-// Centered on the decision the app exists to make: how much to order and how
-// much of that is safety buffer, at the chosen service level - not just the
-// raw forecast.
-export default function KpiStrip({ rows, service }) {
+// Centered on the decision the app exists to make: how much to order now, given
+// what's on hand and how long resupply takes - not just the raw forecast.
+export default function KpiStrip({ rows, service, settings }) {
   const stats = useMemo(() => {
-    let forecast = 0, order = 0, safety = 0;
+    let forecast = 0, order = 0, reorderCount = 0, grounded = 0;
     for (const r of rows) {
       forecast += Number(r.Forecast || 0);
-      const rec = recommendation(r, service.z);
-      order += rec.order;
-      safety += rec.safety;
+      const d = reorder(r, settings, service.z);
+      order += d.order;
+      if (d.hasInventory) {
+        grounded += 1;
+        if (d.reorderNow) reorderCount += 1;
+      }
     }
-    return { forecast, order, safety, products: rows.length };
-  }, [rows, service]);
+    return { forecast, order, reorderCount, grounded, products: rows.length };
+  }, [rows, service, settings]);
 
   return (
     <div className="grid grid-cols-2 gap-px overflow-hidden rounded-xl border border-[var(--line)] bg-[var(--line)] sm:grid-cols-4">
@@ -22,13 +24,13 @@ export default function KpiStrip({ rows, service }) {
       <Kpi
         label="Suggested order"
         value={formatNumber(stats.order)}
-        sub={`to meet ${service.label} of demand`}
+        sub={`to order now at ${service.label} service`}
         accent
       />
       <Kpi
-        label="Safety stock"
-        value={formatNumber(stats.safety)}
-        sub={`buffer at ${service.label} service`}
+        label="Reorder now"
+        value={stats.grounded ? formatNumber(stats.reorderCount) : "—"}
+        sub={stats.grounded ? `of ${formatNumber(stats.grounded)} with stock set` : "set on-hand to enable"}
       />
       <Kpi label="Products" value={formatNumber(stats.products)} sub="SKUs forecast" />
     </div>

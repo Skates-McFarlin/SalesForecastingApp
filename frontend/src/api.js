@@ -80,9 +80,25 @@ export async function importSales(file) {
   );
 }
 
-async function catalogRun(path, startDate, duration, signal) {
+// Forecast always anchors at the catalog's data edge (the backend derives the
+// origin), so this sends a horizon length - no start date to mis-align. An
+// optional windowStart reports only a specific future window (e.g. just Q4); the
+// full path from the edge is still forecast to reach it.
+export async function forecastCatalog(duration, { windowStart = null, signal } = {}) {
   return asJson(
-    await fetch(`${BASE}/api/catalog/${path}`, {
+    await fetch(`${BASE}/api/catalog/forecast`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ duration, window_start: windowStart }),
+      signal,
+    })
+  );
+}
+
+// Accuracy backtests a chosen in-history window, so it keeps the start date.
+export async function scoreCatalogAccuracy(startDate, duration, { signal } = {}) {
+  return asJson(
+    await fetch(`${BASE}/api/catalog/accuracy`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ start_date: startDate, duration }),
@@ -91,15 +107,46 @@ async function catalogRun(path, startDate, duration, signal) {
   );
 }
 
-export async function forecastCatalog(startDate, duration, { signal } = {}) {
-  return catalogRun("forecast", startDate, duration, signal);
-}
-
-export async function scoreCatalogAccuracy(startDate, duration, { signal } = {}) {
-  return catalogRun("accuracy", startDate, duration, signal);
-}
-
 export async function fetchSummary(predictionId) {
   const body = await asJson(await fetch(`${BASE}/api/predictions/${predictionId}/summary`));
   return body.Summary;
+}
+
+// --- Inventory state & economics (Phase 2) --------------------------------
+
+export async function fetchSettings() {
+  return asJson(await fetch(`${BASE}/api/inventory/settings`));
+}
+
+export async function updateSettings(patch) {
+  return asJson(
+    await fetch(`${BASE}/api/inventory/settings`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(patch),
+    })
+  );
+}
+
+// Patch one product's inventory state (on-hand, on-order, lead time, cost, ...).
+export async function updateProductInventory(key, patch) {
+  return asJson(
+    await fetch(`${BASE}/api/inventory/product/${encodeURIComponent(key)}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(patch),
+    })
+  );
+}
+
+// --- Decision & outcome ledger (Phase 1) ----------------------------------
+
+// Every recorded forecast run, newest first (with accuracy where reconciled).
+export async function fetchLedger() {
+  return asJson(await fetch(`${BASE}/api/ledger`));
+}
+
+// Per-SKU forecast-vs-outcome detail for one run.
+export async function fetchRun(runId) {
+  return asJson(await fetch(`${BASE}/api/ledger/${runId}`));
 }

@@ -24,18 +24,19 @@ def generate():
         if file.filename == "":
             return jsonify({"error": "No selected file"}), 400
 
-        start_date = request.form.get("start_date")
+        # Forecasts always run forward from the uploaded data's edge, so no start
+        # date is needed (a picked one only mislabeled the numbers).
         duration = request.form.get("duration")
 
-        if not start_date or not duration:
-            return jsonify({"error": "Missing start_date or duration"}), 400
+        if not duration:
+            return jsonify({"error": "Missing duration"}), 400
 
         try:
             duration = int(duration)
         except ValueError:
             return jsonify({"error": "Duration must be an integer"}), 400
 
-        return jsonify(json.loads(predict_sales_forecasting(file, start_date, duration))), 201
+        return jsonify(json.loads(predict_sales_forecasting(file, duration))), 201
         
 
     except Exception as e:

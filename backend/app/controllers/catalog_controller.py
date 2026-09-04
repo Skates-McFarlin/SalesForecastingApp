@@ -30,6 +30,12 @@ _ALIASES = {
     "qty": ["quantity", "qty", "units", "units sold", "quantity sold"],
     "price": ["unit price", "price", "unit_price"],
     "category": ["category", "type", "product type"],
+    # Inventory state & economics (Phase 2) - picked up from the file when present.
+    "on_hand": ["on hand", "on_hand", "stock", "stock on hand", "quantity on hand",
+                "qoh", "inventory", "inventory on hand"],
+    "unit_cost": ["unit cost", "unit_cost", "cost", "cogs", "cost price"],
+    "lead_time": ["lead time", "lead_time_days", "lead time (days)",
+                  "lead time days", "leadtime"],
 }
 
 
@@ -79,6 +85,37 @@ def _to_price(value):
         return None
 
 
+def _capture_inventory(rows, col):
+    """Pull per-product inventory fields (on-hand, unit cost, lead time) out of a
+    file that carries them - a POS/inventory export usually has on-hand and cost.
+    Returns {product key: {on_hand, unit_cost, lead_time_days}} with the last
+    non-empty value seen per product (these repeat per row in a long feed)."""
+    if not any(k in col for k in ("on_hand", "unit_cost", "lead_time")):
+        return {}
+    casters = {"on_hand": float, "unit_cost": float,
+               "lead_time_days": lambda x: int(float(x))}
+    src = {"on_hand": "on_hand", "unit_cost": "unit_cost", "lead_time_days": "lead_time"}
+    out = {}
+    for row in rows:
+        name = (row.get(col.get("name", ""), "") or "").strip()
+        sku = (row.get(col.get("sku", ""), "") or "").strip()
+        key = sku or name
+        if not key:
+            continue
+        vals = out.get(key, {})
+        for field, src_field in src.items():
+            if src_field in col:
+                raw = row.get(col[src_field], "")
+                if raw not in ("", None):
+                    try:
+                        vals[field] = casters[field](raw)
+                    except (ValueError, TypeError):
+                        pass
+        if vals:
+            out[key] = vals
+    return out
+
+
 def import_sales(file):
     """Parse an uploaded sales file and merge it into the catalog.
 
@@ -88,6 +125,7 @@ def import_sales(file):
     """
     rows, headers = _read_rows(file)
     col = _resolve_columns(headers)
+    inv_by_key = _capture_inventory(rows, col)  # on-hand/cost/lead-time if present
     if "date" in col and "qty" in col:  # a long/transactional (daily) feed
         json_data, extra_context_by_group = _long_to_json(rows, headers)
     else:  # the wide monthly spreadsheet
@@ -143,6 +181,14 @@ def import_sales(file):
             if changed:
                 stats["products_updated"] += 1
 
+        # Apply any inventory fields the file carried for this product.
+        inv = inv_by_key.get(key)
+        if inv:
+            for field, value in inv.items():
+                setattr(product, field, value)
+            if "on_hand" in inv:
+                product.inventory_updated_at = datetime.utcnow()
+
         existing_records = {
             sr.date: sr for sr in SalesRecord.query.filter_by(product_id=product.id).all()
         }
@@ -170,6 +216,15 @@ def import_sales(file):
         stats["date_from"] = min(all_dates).isoformat()
         stats["date_to"] = max(all_dates).isoformat()
     stats["catalog_size"] = Product.query.count()
+
+    # Newly synced sales may now cover a past forecast's window - grade those
+    # runs against what actually sold (Phase 1 ledger). Best-effort.
+    try:
+        from app.controllers.ledger_controller import reconcile_runs
+        stats["runs_reconciled"] = reconcile_runs()
+    except Exception:  # noqa: BLE001
+        pass
+
     return stats
 
 
@@ -186,6 +241,31 @@ def detect_grain():
         .first()
     )
     return WEEKLY if non_first else MONTHLY
+
+
+def forecast_origin(grain=None):
+    """The first period a forward forecast will cover: the period immediately
+    after the catalog's last period, on the grain's grid.
+
+    This is where the engine ACTUALLY forecasts from (the statistical/foundation
+    members forecast the periods after each series' last observation), so the app
+    anchors here rather than trusting a picked start date - that mismatch is what
+    made a non-edge start silently return "the next N periods" relabeled. Returns
+    a date, or None when the catalog has no history yet.
+    """
+    from app.forecasting.base import WEEKLY
+    if grain is None:
+        grain = detect_grain()
+    last = db.session.query(db.func.max(SalesRecord.date)).scalar()
+    if last is None:
+        return None
+    last_ts = pd.Timestamp(last)
+    if grain is WEEKLY:
+        # Match catalog_to_json_data's weekly resample: buckets end on Sunday.
+        last_period = last_ts.to_period("W-SUN").end_time.normalize()
+    else:
+        last_period = last_ts.to_period("M").start_time
+    return pd.date_range(start=last_period, periods=2, freq=grain.freq)[1].date()
 
 
 def catalog_to_json_data(grain=None):
@@ -257,4 +337,8 @@ def catalog_summary():
         "date_to": span[1].isoformat() if span[1] else None,
         "categories": sorted(categories),
         "grain": detect_grain().label,
+        # Where the next forecast will start (the data's edge + 1 period), so the
+        # UI can show the anchor and turn a "forecast through <month>" target into
+        # a horizon length.
+        "forecast_origin": (lambda o: o.isoformat() if o else None)(forecast_origin()),
     }
