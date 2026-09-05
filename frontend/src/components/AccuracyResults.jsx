@@ -29,6 +29,13 @@ export default function AccuracyResults({ rows }) {
   const scored = useMemo(() => rows.map(parseMase).filter((v) => v != null), [rows]);
   const avgMase = scored.length ? scored.reduce((s, v) => s + v, 0) / scored.length : null;
   const beatNaive = scored.filter((v) => v < 1).length;
+  // "Beat last year" = beat a seasonal-naive (same window a year ago) forecast —
+  // the meaningful bar on seasonal retail, and where the ensemble earns its keep.
+  const snScored = useMemo(
+    () => rows.filter((r) => r["Error Metrics"].BeatSeasonalNaive != null),
+    [rows]
+  );
+  const beatSN = snScored.filter((r) => r["Error Metrics"].BeatSeasonalNaive).length;
 
   return (
     <div className="flex min-h-0 flex-col gap-4">
@@ -42,21 +49,24 @@ export default function AccuracyResults({ rows }) {
         means the model beats naive</span>. <span className="font-medium text-[var(--ink)]">MAE</span>{" "}
         and <span className="font-medium text-[var(--ink)]">RMSE</span> are in units;{" "}
         <span className="font-medium text-[var(--ink)]">MAPE</span> is the average percentage error
-        (it can distort on near-zero demand).
+        (it can distort on near-zero demand). <span className="font-medium text-[var(--ink)]">vs last
+        year</span> is the seasonal-naive MASE — the same window a year ago — so a lower MASE than
+        that column means the model beat the obvious seasonal guess.
       </div>
 
       <div className="grid grid-cols-2 gap-px overflow-hidden rounded-xl border border-[var(--line)] bg-[var(--line)] sm:grid-cols-4">
         <Stat label="Products scored" value={formatNumber(rows.length)} />
-        <Stat label="Average MASE" value={avgMase == null ? "—" : avgMase.toFixed(2)} sub="lower is better · 1.0 = naive" />
+        <Stat label="Average MASE" value={avgMase == null ? "—" : avgMase.toFixed(2)} sub="lower is better · 1.0 = naive-1" />
         <Stat
-          label="Beat naive"
-          value={scored.length ? `${beatNaive} of ${scored.length}` : "—"}
-          sub="MASE below 1.0"
+          label="Beat last year"
+          value={snScored.length ? `${beatSN} of ${snScored.length}` : "—"}
+          sub="better than a seasonal-naive guess"
           accent
         />
         <Stat
-          label="Within 20% (MAPE)"
-          value={`${rows.filter((r) => parseMape(r) <= 20).length} of ${rows.length}`}
+          label="Beat naive-1"
+          value={scored.length ? `${beatNaive} of ${scored.length}` : "—"}
+          sub="MASE below 1.0 (a hard bar on noisy data)"
         />
       </div>
 
@@ -74,7 +84,7 @@ export default function AccuracyResults({ rows }) {
         <table className="w-full border-collapse text-sm">
           <thead className="sticky top-0 z-10 bg-[var(--surface-2)]">
             <tr className="border-b border-[var(--line)]">
-              {["Product", "Predicted", "Actual", "MASE", "MAE", "RMSE", "MAPE"].map((h, i) => (
+              {["Product", "Predicted", "Actual", "MASE", "vs last yr", "MAE", "RMSE", "MAPE"].map((h, i) => (
                 <th
                   key={h}
                   className={`px-3 py-2.5 text-[10px] font-semibold tracking-[0.09em] text-[var(--ink-3)] uppercase ${
@@ -99,6 +109,9 @@ export default function AccuracyResults({ rows }) {
                 </td>
                 <td className="px-3 py-2.5 text-right">
                   <MaseBadge value={parseMase(row)} />
+                </td>
+                <td className="tnum px-3 py-2.5 text-right text-[var(--ink-3)]">
+                  {row["Error Metrics"].SeasonalNaiveMASE ?? "—"}
                 </td>
                 <td className="tnum px-3 py-2.5 text-right text-[var(--ink-2)]">
                   {row["Error Metrics"].MAE}

@@ -1411,6 +1411,21 @@ def _error_metrics_core(json_data, extra_context_by_group, start_date, duration,
         scale = np.mean(np.abs(np.diff(train_vals))) if train_vals.size > 1 else 0.0
         mase = float(round(mae / scale, 2)) if scale > 0 else None
 
+        # Seasonal-naive baseline: carry the same window from one year ago. It's
+        # the standard "did the model actually beat the obvious guess" bar - and
+        # unlike naive-1 it's a real contender on seasonal retail. Defined only
+        # when that year-ago window falls inside this SKU's history.
+        sn_offset = pd.DateOffset(months=12) if grain is MONTHLY else pd.DateOffset(weeks=52)
+        sn_start = cutoff - sn_offset
+        sn_mase = None
+        beat_sn = None
+        if not df_g.empty and sn_start >= df_g["ds"].min():
+            sn_arr = period_actuals(df_g, sn_start, horizon, grain)
+            sn_mae = np.mean(np.abs(sn_arr - actual_arr))
+            if scale > 0:
+                sn_mase = float(round(sn_mae / scale, 2))
+            beat_sn = bool(mae < sn_mae)
+
         error_results.append(
             {
                 "ProductName": df_g["product_name"].iloc[0],
@@ -1422,6 +1437,8 @@ def _error_metrics_core(json_data, extra_context_by_group, start_date, duration,
                     "RMSE": float(round(rmse, 2)),
                     "MAPE": f"{float(round(mape, 2))}%",
                     "MASE": mase,
+                    "SeasonalNaiveMASE": sn_mase,
+                    "BeatSeasonalNaive": beat_sn,
                 },
             }
         )
