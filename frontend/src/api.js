@@ -139,6 +139,36 @@ export async function updateProductInventory(key, patch) {
   );
 }
 
+// --- Purchase orders (Phase 2.5) ------------------------------------------
+// Each returns the product's refreshed inventory state (on-order, learned lead,
+// open POs) so the caller can update that row and recompute the order live.
+
+export async function createPurchaseOrder(productKey, quantity) {
+  return asJson(
+    await fetch(`${BASE}/api/purchase-orders`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ product_key: productKey, quantity }),
+    })
+  );
+}
+
+export async function receivePurchaseOrder(poId, { receivedQty } = {}) {
+  return asJson(
+    await fetch(`${BASE}/api/purchase-orders/${poId}/receive`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(receivedQty == null ? {} : { received_qty: receivedQty }),
+    })
+  );
+}
+
+export async function cancelPurchaseOrder(poId) {
+  return asJson(
+    await fetch(`${BASE}/api/purchase-orders/${poId}`, { method: "DELETE" })
+  );
+}
+
 // --- Decision & outcome ledger (Phase 1) ----------------------------------
 
 // Every recorded forecast run, newest first (with accuracy where reconciled).

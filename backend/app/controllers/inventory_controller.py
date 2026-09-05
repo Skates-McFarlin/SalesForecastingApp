@@ -48,11 +48,15 @@ def update_settings(data):
 
 def inventory_state(product):
     """The inventory fields for one product, in the shape the forecast results
-    and the UI use (capitalized keys to sit alongside the forecast fields)."""
-    return {
+    and the UI use (capitalized keys to sit alongside the forecast fields).
+
+    On-order and learned lead time come from purchase orders (Phase 2.5), so
+    "what's on the way" is the sum of open POs rather than a hand-kept number."""
+    from app.controllers.purchase_order_controller import po_summary
+
+    state = {
         "OnHand": product.on_hand,
-        "OnOrder": product.on_order,
-        "LeadTimeDays": product.lead_time_days,
+        "LeadTimeDays": product.lead_time_days,  # the typed/planned lead (fallback)
         "UnitCost": product.unit_cost,
         "MOQ": product.moq,
         "CasePack": product.case_pack,
@@ -60,6 +64,21 @@ def inventory_state(product):
             product.inventory_updated_at.isoformat() if product.inventory_updated_at else None
         ),
     }
+    state.update(po_summary(product))  # OnOrder, LeadLearned, LeadObs, OpenPOs
+    return state
+
+
+def effective_lead(product):
+    """The lead time to actually use: learned from received POs when there's
+    enough history, else the typed value, else the business default."""
+    from app.controllers.purchase_order_controller import po_summary
+
+    learned = po_summary(product).get("LeadLearned")
+    if learned is not None:
+        return learned
+    if product.lead_time_days:
+        return product.lead_time_days
+    return get_settings().default_lead_time_days
 
 
 def inventory_by_key():
@@ -68,7 +87,8 @@ def inventory_by_key():
     return {p.key: inventory_state(p) for p in Product.query.all()}
 
 
-_INV_FIELDS = ("on_hand", "on_order", "lead_time_days", "unit_cost", "moq", "case_pack")
+# on_order is no longer edited by hand - it's derived from open purchase orders.
+_INV_FIELDS = ("on_hand", "lead_time_days", "unit_cost", "moq", "case_pack")
 
 
 def update_product_inventory(key, data):

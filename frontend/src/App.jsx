@@ -6,14 +6,18 @@ import {
 import { catalogRange, cmp, dateBounds, durationThrough, monthRangeForYear } from "./dates";
 import AccuracyResults from "./components/AccuracyResults";
 import ControlPanel from "./components/ControlPanel";
+import Exceptions from "./components/Exceptions";
 import ForecastChart from "./components/ForecastChart";
 import KpiStrip from "./components/KpiStrip";
 import Ledger from "./components/Ledger";
+import OrderPlan from "./components/OrderPlan";
 import ResultsTable from "./components/ResultsTable";
 import { Card, ErrorNote, SectionLabel, Select, SERVICE_LEVELS } from "./components/ui";
 
 const TABS = [
+  { id: "attention", label: "Attention" },
   { id: "forecast", label: "Forecast" },
+  { id: "orderplan", label: "Order plan" },
   { id: "accuracy", label: "Accuracy" },
   { id: "ledger", label: "Track record" },
 ];
@@ -24,7 +28,7 @@ export default function App() {
   const [theme, setTheme] = useState(
     () => localStorage.getItem("insighta-theme") ?? "light"
   );
-  const [tab, setTab] = useState("forecast");
+  const [tab, setTab] = useState("attention"); // open onto "what needs you"
 
   const [year, setYear] = useState(new Date().getFullYear());
   const [month, setMonth] = useState(1);
@@ -89,8 +93,19 @@ export default function App() {
     on_hand: "OnHand", on_order: "OnOrder", lead_time_days: "LeadTimeDays",
     unit_cost: "UnitCost", moq: "MOQ", case_pack: "CasePack",
   };
-  // Edit one product's inventory: update the row locally (so the reorder math
-  // recomputes instantly) and persist to the catalog.
+  // Merge an authoritative inventory-state object (capitalized keys, as the
+  // backend returns it - incl. PO-derived on-order, learned lead, open POs) into
+  // the matching forecast row so the reorder math recomputes instantly.
+  const applyInventory = (key, state) => {
+    if (!state) return;
+    setForecast((f) => ({
+      ...f,
+      rows: f.rows?.map((r) => ((r.Sku || r.ProductName) === key ? { ...r, ...state } : r)),
+    }));
+  };
+
+  // Edit one product's inventory: optimistic local update, persist, then sync to
+  // the server's returned state (picks up inventory_updated_at etc.).
   const changeInventory = (key, patch) => {
     const rowPatch = {};
     for (const [k, v] of Object.entries(patch)) {
@@ -100,11 +115,13 @@ export default function App() {
       ...f,
       rows: f.rows?.map((r) => ((r.Sku || r.ProductName) === key ? { ...r, ...rowPatch } : r)),
     }));
-    updateProductInventory(key, patch).catch(() => {});
+    updateProductInventory(key, patch).then((s) => applyInventory(key, s)).catch(() => {});
   };
 
-  const active = tab === "forecast" ? forecast : accuracy;
-  const setActive = tab === "forecast" ? setForecast : setAccuracy;
+  // Forecast and Attention share the same forecast run (Attention is a lens on
+  // it); only Accuracy has its own state.
+  const active = tab === "accuracy" ? accuracy : forecast;
+  const setActive = tab === "accuracy" ? setAccuracy : setForecast;
 
   // Start-date window derived from the uploaded file (past for backtesting,
   // forward for forecasting). Falls back to a default range before a file lands.
@@ -171,20 +188,21 @@ export default function App() {
 
     try {
       let rows;
-      if (tab === "forecast") {
-        // Always forward from the data edge; a window narrows what's reported.
+      if (tab === "accuracy") {
+        // Accuracy backtests a chosen in-history window.
+        const startDate = `${year}-${String(month).padStart(2, "0")}-01`;
+        rows = await scoreCatalogAccuracy(startDate, duration, { signal: controller.signal });
+      } else {
+        // Forecast/Attention: always forward from the data edge (a window narrows
+        // what's reported).
         rows = await forecastCatalog(forecastDuration, {
           windowStart: forecastWindowStart,
           signal: controller.signal,
         });
-      } else {
-        // Accuracy backtests a chosen in-history window.
-        const startDate = `${year}-${String(month).padStart(2, "0")}-01`;
-        rows = await scoreCatalogAccuracy(startDate, duration, { signal: controller.signal });
       }
       setActive({ rows, error: null, busy: false });
       // A forecast records a run in the ledger - refresh the track record.
-      if (tab === "forecast") setLedgerToken((t) => t + 1);
+      if (tab !== "accuracy") setLedgerToken((t) => t + 1);
     } catch (err) {
       if (err.name === "AbortError") {
         setActive({ rows: null, error: null, busy: false });
@@ -265,13 +283,17 @@ export default function App() {
             onCancel={() => abortRef.current?.abort()}
             busy={active.busy}
             elapsed={elapsed}
-            mode={tab}
+            mode={tab === "attention" || tab === "orderplan" ? "forecast" : tab}
             origin={origin}
             fcWindow={fcWindow}
             onWindow={setFcWindow}
             forecastDuration={forecastDuration}
-            submitLabel={tab === "forecast" ? "Generate forecast" : "Score accuracy"}
-            busyLabel={tab === "forecast" ? "Forecasting…" : "Scoring accuracy…"}
+            submitLabel={
+              tab === "accuracy" ? "Score accuracy" : tab === "attention" ? "Scan catalog" : "Generate forecast"
+            }
+            busyLabel={
+              tab === "accuracy" ? "Scoring accuracy…" : tab === "attention" ? "Scanning…" : "Forecasting…"
+            }
           />
         </aside>
 
@@ -286,13 +308,46 @@ export default function App() {
 
           {tab === "ledger" && <Ledger reloadToken={ledgerToken} />}
 
-          {tab !== "ledger" && active.busy && <RunningState tab={tab} />}
+          {tab === "attention" && active.busy && <RunningState tab={tab} />}
+          {tab === "attention" && !active.busy && active.rows?.length > 0 && (
+            <Exceptions
+              rows={active.rows}
+              settings={settings}
+              service={service}
+              onInventoryResult={applyInventory}
+              onOpenForecast={() => setTab("forecast")}
+            />
+          )}
+          {tab === "attention" && !active.busy && !active.rows?.length && (
+            <RunEmpty
+              hasCatalog={!!catalog && !catalog.empty}
+              emptyResult={active.rows?.length === 0}
+              onRun={run}
+            />
+          )}
 
-          {tab !== "ledger" && !active.busy && !active.rows && !active.error && (
+          {tab === "orderplan" && active.busy && <RunningState tab={tab} />}
+          {tab === "orderplan" && !active.busy && active.rows?.length > 0 && (
+            <OrderPlan rows={active.rows} settings={settings} service={service} />
+          )}
+          {tab === "orderplan" && !active.busy && !active.rows?.length && (
+            <RunEmpty
+              hasCatalog={!!catalog && !catalog.empty}
+              emptyResult={active.rows?.length === 0}
+              onRun={run}
+              title="Plan a budgeted buy"
+              desc="Generate a forecast, then set a cash budget and the app allocates it across the catalog to maximize service."
+              ctaLabel="Generate forecast"
+            />
+          )}
+
+          {tab !== "ledger" && tab !== "attention" && tab !== "orderplan" && active.busy && <RunningState tab={tab} />}
+
+          {tab !== "ledger" && tab !== "attention" && tab !== "orderplan" && !active.busy && !active.rows && !active.error && (
             <EmptyState tab={tab} hasCatalog={!!catalog && !catalog.empty} />
           )}
 
-          {tab !== "ledger" && !active.busy && active.rows?.length === 0 && (
+          {tab !== "ledger" && tab !== "attention" && tab !== "orderplan" && !active.busy && active.rows?.length === 0 && (
             <Card className="p-10 text-center text-sm text-[var(--ink-3)]">
               No products could be forecast from your catalog. Import a file with a{" "}
               <span className="font-medium text-[var(--ink-2)]">Product Name</span> column and
@@ -352,6 +407,7 @@ export default function App() {
                 setService={setService}
                 settings={settings}
                 onInventoryChange={changeInventory}
+                onInventoryResult={applyInventory}
                 grain={grain}
               />
             </div>
@@ -379,7 +435,13 @@ function RunningState({ tab }) {
       </div>
       <Card className="p-4">
         <SectionLabel className="mb-3">
-          {tab === "forecast" ? "Building your forecast" : "Scoring model accuracy"}
+          {tab === "accuracy"
+            ? "Scoring model accuracy"
+            : tab === "attention"
+              ? "Scanning your catalog"
+              : tab === "orderplan"
+                ? "Planning your buy"
+                : "Building your forecast"}
         </SectionLabel>
         <div className="flex h-40 items-end gap-2">
           {[45, 70, 35, 85, 55, 65, 40, 75, 50, 60].map((h, i) => (
@@ -391,6 +453,49 @@ function RunningState({ tab }) {
           ))}
         </div>
       </Card>
+    </div>
+  );
+}
+
+function RunEmpty({
+  hasCatalog,
+  emptyResult,
+  onRun,
+  title = "See what needs your attention",
+  desc = "Scan your catalog to surface stockout risks, overdue deliveries, overstock, and sharp demand shifts — ranked by urgency.",
+  ctaLabel = "Scan my catalog",
+}) {
+  return (
+    <div className="flex h-full min-h-80 items-center justify-center">
+      <div className="max-w-sm text-center">
+        <div className="mx-auto flex size-11 items-center justify-center rounded-xl border border-[var(--line)] bg-[var(--surface)]">
+          <svg className="size-5 text-[var(--ink-3)]" viewBox="0 0 20 20" fill="none">
+            <path
+              d="M10 2.5a4.5 4.5 0 0 0-4.5 4.5c0 3.5-1.5 4.5-1.5 4.5h12s-1.5-1-1.5-4.5A4.5 4.5 0 0 0 10 2.5ZM8.5 15a1.5 1.5 0 0 0 3 0"
+              stroke="currentColor"
+              strokeWidth="1.5"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            />
+          </svg>
+        </div>
+        <h2 className="mt-4 text-sm font-semibold">
+          {!hasCatalog ? "Your catalog is empty" : emptyResult ? "Nothing to plan yet" : title}
+        </h2>
+        <p className="mt-1.5 text-sm leading-relaxed text-[var(--ink-2)]">
+          {!hasCatalog
+            ? "Import a sales file to build your catalog, then run it to see what needs action."
+            : desc}
+        </p>
+        {hasCatalog && !emptyResult && (
+          <button
+            onClick={onRun}
+            className="mt-4 inline-flex items-center gap-2 rounded-lg bg-accent-500 px-4 py-2.5 text-sm font-medium text-white transition-colors hover:bg-accent-600"
+          >
+            {ctaLabel}
+          </button>
+        )}
+      </div>
     </div>
   );
 }

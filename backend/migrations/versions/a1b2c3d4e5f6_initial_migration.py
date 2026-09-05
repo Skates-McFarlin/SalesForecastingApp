@@ -114,6 +114,20 @@ def upgrade():
         sa.ForeignKeyConstraint(['run_id'], ['forecast_run.id']),
         sa.PrimaryKeyConstraint('id'),
     )
+    # Replenishment orders (Phase 2.5): self-maintaining on-order + learned lead
+    op.create_table(
+        'purchase_order',
+        sa.Column('id', sa.Integer(), nullable=False),
+        sa.Column('product_id', sa.Integer(), nullable=False, index=True),
+        sa.Column('quantity', sa.Float(), nullable=False),
+        sa.Column('placed_on', sa.Date(), nullable=False),
+        sa.Column('expected_on', sa.Date(), nullable=True),
+        sa.Column('received_on', sa.Date(), nullable=True),
+        sa.Column('received_qty', sa.Float(), nullable=True),
+        sa.Column('created_at', sa.DateTime(), nullable=True),
+        sa.ForeignKeyConstraint(['product_id'], ['product.id']),
+        sa.PrimaryKeyConstraint('id'),
+    )
     # Business-level inventory defaults (Phase 2) - a single row (id=1)
     op.create_table(
         'settings',
@@ -128,6 +142,7 @@ def upgrade():
 
 def downgrade():
     op.drop_table('settings')
+    op.drop_table('purchase_order')
     op.drop_table('ledger_item')
     op.drop_table('forecast_run')
     op.drop_table('sales_record')

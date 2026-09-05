@@ -199,7 +199,17 @@ function snapOrder(qty, moq, casePack) {
 export function reorder(row, settings, z) {
   const r = Math.max(0, Number(row.DailyRate || 0));
   const s = Math.max(0, Number(row.DailySigma || 0));
-  const L = Math.max(0, Number(row.LeadTimeDays ?? settings?.default_lead_time_days ?? 14));
+  // Lead time precedence: learned from received POs -> typed -> business default.
+  let leadDays = settings?.default_lead_time_days ?? 14;
+  let leadSource = "default";
+  if (row.LeadLearned != null) {
+    leadDays = row.LeadLearned;
+    leadSource = "learned";
+  } else if (row.LeadTimeDays != null && row.LeadTimeDays !== "") {
+    leadDays = row.LeadTimeDays;
+    leadSource = "typed";
+  }
+  const L = Math.max(0, Number(leadDays));
   const R = Math.max(1, Number(settings?.review_period_days ?? 7));
   const P = L + R;
 
@@ -219,6 +229,9 @@ export function reorder(row, settings, z) {
     reorderPoint: Math.round(reorderPoint),
     position: Math.round(position),
     leadTimeDays: L,
+    leadSource,
+    leadObs: Number(row.LeadObs || 0),
+    onOrder: Math.round(Number(row.OnOrder || 0)),
     coverDays,
     // Only flag/gate on stock position when we actually know the on-hand.
     reorderNow: hasInventory ? position <= reorderPoint : false,

@@ -38,6 +38,9 @@ class Product(db.Model):
     sales = db.relationship(
         "SalesRecord", backref="product", cascade="all, delete-orphan", lazy="dynamic"
     )
+    purchase_orders = db.relationship(
+        "PurchaseOrder", backref="product", cascade="all, delete-orphan", lazy="dynamic"
+    )
 
     def __repr__(self):
         return f"<Product {self.key}>"

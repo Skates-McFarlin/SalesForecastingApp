@@ -218,34 +218,48 @@ function ForecastControls({ origin, grain, duration, onDuration, fcWindow, onWin
         </div>
       )}
 
-      <Field label="Forecast length">
-        <Select
-          value={duration}
-          onChange={(e) => onDuration(Number(e.target.value))}
-          disabled={busy || !!fcWindow}
-        >
-          {(DURATIONS[grain] || DURATIONS.monthly).map((d) => (
-            <option key={d} value={d}>
-              {d} {unitWord}
-            </option>
-          ))}
-        </Select>
-      </Field>
+      <div className="space-y-2">
+        <div className="flex items-center justify-between">
+          <SectionLabel>Horizon</SectionLabel>
+          <div className="inline-flex rounded-lg border border-[var(--line-strong)] bg-[var(--surface-2)] p-0.5 text-xs font-medium">
+            <button
+              type="button"
+              onClick={() => onWindow(null)}
+              disabled={busy}
+              className={`rounded-md px-2.5 py-1 transition-colors ${
+                !fcWindow
+                  ? "bg-[var(--surface)] text-[var(--ink)] shadow-sm"
+                  : "text-[var(--ink-3)] hover:text-[var(--ink-2)]"
+              }`}
+            >
+              Length
+            </button>
+            <button
+              type="button"
+              onClick={() => { if (!fcWindow) enableWindow(); }}
+              disabled={busy || !oParts}
+              className={`rounded-md px-2.5 py-1 transition-colors disabled:opacity-45 ${
+                fcWindow
+                  ? "bg-[var(--surface)] text-[var(--ink)] shadow-sm"
+                  : "text-[var(--ink-3)] hover:text-[var(--ink-2)]"
+              }`}
+            >
+              Window
+            </button>
+          </div>
+        </div>
 
-      <div className="rounded-lg border border-[var(--line)] px-3 py-2.5">
-        <label className="flex cursor-pointer items-center gap-2 text-sm">
-          <input
-            type="checkbox"
-            checked={!!fcWindow}
-            onChange={(e) => (e.target.checked ? enableWindow() : onWindow(null))}
-            disabled={busy || !oParts}
-            className="size-3.5 accent-[var(--accent-500,#4f46e5)]"
-          />
-          <span className="text-[var(--ink-2)]">…or forecast a specific window</span>
-        </label>
-        {fcWindow && (
-          <div className="mt-2.5 space-y-2">
-            <WindowRow
+        {!fcWindow ? (
+          <Select value={duration} onChange={(e) => onDuration(Number(e.target.value))} disabled={busy}>
+            {(DURATIONS[grain] || DURATIONS.monthly).map((d) => (
+              <option key={d} value={d}>
+                {d} {unitWord}
+              </option>
+            ))}
+          </Select>
+        ) : (
+          <div className="space-y-2.5">
+            <WindowField
               label="From"
               value={fcWindow.from}
               years={years}
@@ -253,7 +267,7 @@ function ForecastControls({ origin, grain, duration, onDuration, fcWindow, onWin
               onChange={setFrom}
               busy={busy}
             />
-            <WindowRow
+            <WindowField
               label="Through"
               value={fcWindow.through}
               years={years}
@@ -261,9 +275,10 @@ function ForecastControls({ origin, grain, duration, onDuration, fcWindow, onWin
               onChange={setThrough}
               busy={busy}
             />
-            <div className="tnum text-[11px] text-[var(--ink-3)]">
-              = {forecastDuration} {unitWord} forecast from your data’s edge; reports only this window.
-            </div>
+            <p className="text-[11px] leading-relaxed text-[var(--ink-3)]">
+              Forecasts <span className="tnum font-medium text-[var(--ink-2)]">{forecastDuration} {unitWord}</span>{" "}
+              from your data’s edge, reporting only this window.
+            </p>
           </div>
         )}
       </div>
@@ -271,34 +286,38 @@ function ForecastControls({ origin, grain, duration, onDuration, fcWindow, onWin
   );
 }
 
-function WindowRow({ label, value, years, monthDisabled, onChange, busy }) {
+function WindowField({ label, value, years, monthDisabled, onChange, busy }) {
   return (
-    <div className="flex items-center gap-2">
-      <span className="w-14 shrink-0 text-[11px] font-medium text-[var(--ink-3)]">{label}</span>
-      <Select
-        className="py-1.5"
-        value={value.m}
-        onChange={(e) => onChange({ ...value, m: Number(e.target.value) })}
-        disabled={busy}
-      >
-        {MONTHS.map((name, i) => (
-          <option key={name} value={i + 1} disabled={monthDisabled(i + 1)}>
-            {name}
-          </option>
-        ))}
-      </Select>
-      <Select
-        className="w-24 py-1.5"
-        value={value.y}
-        onChange={(e) => onChange({ ...value, y: Number(e.target.value) })}
-        disabled={busy}
-      >
-        {years.map((y) => (
-          <option key={y} value={y}>
-            {y}
-          </option>
-        ))}
-      </Select>
+    <div>
+      <span className="mb-1 block text-[10px] font-semibold tracking-[0.08em] text-[var(--ink-3)] uppercase">
+        {label}
+      </span>
+      <div className="grid grid-cols-2 gap-2">
+        <Select
+          className="py-1.5"
+          value={value.m}
+          onChange={(e) => onChange({ ...value, m: Number(e.target.value) })}
+          disabled={busy}
+        >
+          {MONTHS.map((name, i) => (
+            <option key={name} value={i + 1} disabled={monthDisabled(i + 1)}>
+              {name}
+            </option>
+          ))}
+        </Select>
+        <Select
+          className="py-1.5"
+          value={value.y}
+          onChange={(e) => onChange({ ...value, y: Number(e.target.value) })}
+          disabled={busy}
+        >
+          {years.map((y) => (
+            <option key={y} value={y}>
+              {y}
+            </option>
+          ))}
+        </Select>
+      </div>
     </div>
   );
 }

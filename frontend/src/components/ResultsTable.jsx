@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
-import { fetchSummary } from "../api";
+import {
+  fetchSummary, createPurchaseOrder, receivePurchaseOrder, cancelPurchaseOrder,
+} from "../api";
 import {
   Badge, DeltaBadge, formatNumber, Input, reorder, SectionLabel,
   Select, SERVICE_LEVELS, Spinner,
@@ -72,7 +74,7 @@ function exportCsv(rows, service, settings) {
   URL.revokeObjectURL(url);
 }
 
-export default function ResultsTable({ rows, service, setService, settings, onInventoryChange, grain = "monthly" }) {
+export default function ResultsTable({ rows, service, setService, settings, onInventoryChange, onInventoryResult, grain = "monthly" }) {
   const [query, setQuery] = useState("");
   const [category, setCategory] = useState("all");
   // null = use the computed default for this dataset; a real value once the
@@ -287,6 +289,7 @@ export default function ResultsTable({ rows, service, setService, settings, onIn
                 service={service}
                 settings={settings}
                 onInventoryChange={onInventoryChange}
+                onInventoryResult={onInventoryResult}
                 isMover={moverIds.has(row.PredictionId)}
                 isOpen={expanded === row.PredictionId}
                 summary={summaries[row.PredictionId]}
@@ -351,11 +354,18 @@ export default function ResultsTable({ rows, service, setService, settings, onIn
 }
 
 /* Rendered as sibling <tr>s so an expanded summary spans the full width. */
-function RowGroup({ row, columnCount, showComparison, share, dec, service, settings, onInventoryChange, isMover, isOpen, summary, onToggle, grain = "monthly" }) {
+function RowGroup({ row, columnCount, showComparison, share, dec, service, settings, onInventoryChange, onInventoryResult, isMover, isOpen, summary, onToggle, grain = "monthly" }) {
   const changeValue = row["% Change from Previous Year"];
   const unitDelta =
     changeValue !== "N/A" ? Number(row.Forecast) - Number(row["Last Year Actual Sales"]) : null;
   const unit = grain === "weekly" ? "wk" : "mo";
+  const reviewDays = settings?.review_period_days ?? 7;
+  const leadNote =
+    dec.leadSource === "learned"
+      ? `learned from ${dec.leadObs} order${dec.leadObs === 1 ? "" : "s"}`
+      : dec.leadSource === "typed"
+        ? "you set"
+        : "default";
 
   return (
     <>
@@ -432,7 +442,7 @@ function RowGroup({ row, columnCount, showComparison, share, dec, service, setti
                 value={dec.coverDays == null ? "—" : `${Math.round(dec.coverDays)} days`}
                 sub={`reorder at ${formatNumber(dec.reorderPoint)}`}
               />
-              <MiniStat label="Lead time" value={`${dec.leadTimeDays} days`} sub={`+ ${settings?.review_period_days ?? 7}d review`} />
+              <MiniStat label="Lead time" value={`${dec.leadTimeDays} days`} sub={`${leadNote} · +${reviewDays}d review`} />
             </div>
 
             <p className="mb-3 text-xs leading-relaxed text-[var(--ink-3)]">
@@ -461,6 +471,8 @@ function RowGroup({ row, columnCount, showComparison, share, dec, service, setti
               defaultLeadTime={settings?.default_lead_time_days}
               onChange={onInventoryChange}
             />
+
+            <PurchaseOrders row={row} suggestedOrder={dec.order} onResult={onInventoryResult} />
 
             <PriceWhatIf
               elasticity={row.Elasticity}
@@ -514,7 +526,6 @@ function MiniStat({ label, value, sub, accent }) {
 
 const INV_FIELDS = [
   { key: "on_hand", row: "OnHand", label: "On hand" },
-  { key: "on_order", row: "OnOrder", label: "On order" },
   { key: "lead_time_days", row: "LeadTimeDays", label: "Lead time (d)" },
   { key: "unit_cost", row: "UnitCost", label: "Unit cost" },
   { key: "moq", row: "MOQ", label: "MOQ" },
@@ -535,7 +546,7 @@ function InventoryEditor({ row, defaultLeadTime, onChange }) {
           </span>
         )}
       </div>
-      <div className="mt-2 grid grid-cols-3 gap-2 sm:grid-cols-6">
+      <div className="mt-2 grid grid-cols-3 gap-2 sm:grid-cols-5">
         {INV_FIELDS.map((f) => (
           <InvInput
             key={f.key}
@@ -598,6 +609,96 @@ function ReorderBadge() {
       </svg>
       Reorder now
     </span>
+  );
+}
+
+// Purchase orders (Phase 2.5) - place a replenishment order (tracked as on-order)
+// and receive it (moves units into on-hand, and teaches the app this product's
+// real lead time). Each action returns the product's refreshed inventory state,
+// which the caller merges into the row so the order recomputes live.
+function PurchaseOrders({ row, suggestedOrder, onResult }) {
+  const key = row.Sku || row.ProductName;
+  const openPOs = row.OpenPOs || [];
+  const [qty, setQty] = useState(suggestedOrder > 0 ? String(suggestedOrder) : "");
+  const [busy, setBusy] = useState(false);
+
+  const run = async (fn) => {
+    setBusy(true);
+    try {
+      const state = await fn();
+      onResult?.(key, state);
+    } catch {
+      /* leave the row as-is on failure */
+    }
+    setBusy(false);
+  };
+
+  return (
+    <div className="mb-3 rounded-lg border border-[var(--line)] px-3 py-2.5">
+      <SectionLabel className="mb-2">Purchase orders</SectionLabel>
+      {openPOs.length > 0 ? (
+        <div className="mb-2.5 space-y-1.5">
+          {openPOs.map((po) => (
+            <div key={po.id} className="flex flex-wrap items-center justify-between gap-2 text-sm">
+              <span className="tnum text-[var(--ink-2)]">
+                {formatNumber(po.quantity)} units
+                <span className="text-[var(--ink-3)]">
+                  {" "}· placed {po.placed_on}
+                  {po.expected_on ? ` · expected ${po.expected_on}` : ""}
+                </span>
+              </span>
+              <span className="flex gap-1.5">
+                <button
+                  onClick={(e) => { e.stopPropagation(); run(() => receivePurchaseOrder(po.id)); }}
+                  disabled={busy}
+                  className="rounded-md bg-accent-500 px-2 py-1 text-xs font-medium text-white transition-colors hover:bg-accent-600 disabled:opacity-45"
+                >
+                  Receive
+                </button>
+                <button
+                  onClick={(e) => { e.stopPropagation(); run(() => cancelPurchaseOrder(po.id)); }}
+                  disabled={busy}
+                  className="rounded-md border border-[var(--line-strong)] px-2 py-1 text-xs font-medium text-[var(--ink-2)] transition-colors hover:bg-[var(--surface-2)] disabled:opacity-45"
+                >
+                  Cancel
+                </button>
+              </span>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <p className="mb-2.5 text-[11px] leading-relaxed text-[var(--ink-3)]">
+          Nothing on the way. Placing an order tracks it as on-order; receiving it moves the units
+          into on-hand and teaches the app this product’s real lead time.
+        </p>
+      )}
+      <div className="flex items-center gap-2">
+        <input
+          type="number"
+          min="0"
+          value={qty}
+          placeholder="qty"
+          onChange={(e) => setQty(e.target.value)}
+          onClick={(e) => e.stopPropagation()}
+          className="tnum w-20 rounded-md border border-[var(--line-strong)] bg-[var(--surface)] px-2 py-1 text-right text-sm text-[var(--ink)] outline-none focus:border-accent-500"
+        />
+        <button
+          onClick={(e) => { e.stopPropagation(); run(() => createPurchaseOrder(key, Number(qty))); }}
+          disabled={busy || !(Number(qty) > 0)}
+          className="rounded-md border border-accent-500 px-2.5 py-1 text-xs font-medium text-accent-600 transition-colors hover:bg-accent-500/10 disabled:opacity-45 dark:text-accent-400"
+        >
+          Create PO
+        </button>
+        {suggestedOrder > 0 && (
+          <button
+            onClick={(e) => { e.stopPropagation(); setQty(String(suggestedOrder)); }}
+            className="tnum text-[11px] text-[var(--ink-3)] underline-offset-2 hover:underline"
+          >
+            use suggested {formatNumber(suggestedOrder)}
+          </button>
+        )}
+      </div>
+    </div>
   );
 }
 
