@@ -62,9 +62,20 @@ def record_run(forecast_results, start_date, horizon, grain,
     """
     try:
         z = _SERVICE_Z.get(DEFAULT_SERVICE_LEVEL, 1.6449)
+        start = pd.to_datetime(start_date).date()
+        # Re-forecasting the same forward window supersedes the prior recommendation
+        # for it: drop any still-pending run with the same signature so the ledger
+        # holds one entry per window (avoids clutter and, once reconciled,
+        # double-counting the same window in the closed-loop learning). Completed
+        # runs are history and are left untouched.
+        for dupe in ForecastRun.query.filter_by(
+            grain=grain.label, start_date=start, horizon=int(horizon), status="pending"
+        ).all():
+            db.session.delete(dupe)  # cascades to its ledger items
+
         run = ForecastRun(
             grain=grain.label,
-            start_date=pd.to_datetime(start_date).date(),
+            start_date=start,
             horizon=int(horizon),
             service_level=DEFAULT_SERVICE_LEVEL,
             catalog_products=catalog_products,

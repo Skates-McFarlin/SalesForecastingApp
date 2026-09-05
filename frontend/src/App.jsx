@@ -20,8 +20,7 @@ const TABS = [
   { id: "assistant", label: "Assistant" },
   { id: "forecast", label: "Forecast" },
   { id: "orderplan", label: "Order plan" },
-  { id: "accuracy", label: "Accuracy" },
-  { id: "ledger", label: "Track record" },
+  { id: "accuracy", label: "Accuracy" }, // holds both Track record and Backtest
 ];
 
 const emptyRun = { rows: null, error: null, busy: false };
@@ -31,6 +30,8 @@ export default function App() {
     () => localStorage.getItem("insighta-theme") ?? "light"
   );
   const [tab, setTab] = useState("attention"); // open onto "what needs you"
+  // The Accuracy tab holds two views: real outcomes (the ledger) and a backtest.
+  const [accuracyView, setAccuracyView] = useState("track");
 
   const [year, setYear] = useState(new Date().getFullYear());
   const [month, setMonth] = useState(1);
@@ -135,6 +136,7 @@ export default function App() {
   // Forecasts anchor at the catalog's data edge (the backend derives this); the
   // UI shows it and turns a "through <month>" target into a horizon length.
   const origin = catalog?.forecast_origin ?? null;
+  const hasCatalog = !!catalog && !catalog.empty;
   useEffect(() => {
     setDuration(grain === "weekly" ? 8 : 12);
     setFcWindow(null); // a window/length doesn't carry across grains
@@ -288,9 +290,11 @@ export default function App() {
             mode={
               tab === "attention" || tab === "orderplan"
                 ? "forecast"
-                : tab === "assistant"
-                  ? "ledger"
-                  : tab
+                : tab === "accuracy"
+                  ? accuracyView === "backtest" ? "accuracy" : "ledger"
+                  : tab === "assistant"
+                    ? "ledger"
+                    : tab
             }
             origin={origin}
             fcWindow={fcWindow}
@@ -313,8 +317,6 @@ export default function App() {
               </ErrorNote>
             </div>
           )}
-
-          {tab === "ledger" && <Ledger reloadToken={ledgerToken} />}
 
           {tab === "attention" && active.busy && <RunningState tab={tab} />}
           {tab === "attention" && !active.busy && active.rows?.length > 0 && (
@@ -364,80 +366,95 @@ export default function App() {
             />
           )}
 
-          {tab !== "ledger" && tab !== "attention" && tab !== "orderplan" && tab !== "assistant" && active.busy && <RunningState tab={tab} />}
-
-          {tab !== "ledger" && tab !== "attention" && tab !== "orderplan" && tab !== "assistant" && !active.busy && !active.rows && !active.error && (
-            <EmptyState tab={tab} hasCatalog={!!catalog && !catalog.empty} />
-          )}
-
-          {tab !== "ledger" && tab !== "attention" && tab !== "orderplan" && tab !== "assistant" && !active.busy && active.rows?.length === 0 && (
-            <Card className="p-10 text-center text-sm text-[var(--ink-3)]">
-              No products could be forecast from your catalog. Import a file with a{" "}
-              <span className="font-medium text-[var(--ink-2)]">Product Name</span> column and
-              monthly{" "}
-              <span className="font-medium text-[var(--ink-2)]">Quantity Sold …</span> columns.
-            </Card>
-          )}
-
-          {!active.busy && active.rows?.length > 0 && tab === "forecast" && (
-            <div className="flex min-h-0 flex-col gap-5">
-              <div className="flex flex-wrap items-center justify-between gap-3">
-                <SectionLabel>Inventory plan</SectionLabel>
-                <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5">
-                  <NumField
-                    label="Lead time"
-                    title="Default supplier resupply time, in days. Products can override this."
-                    value={settings?.default_lead_time_days ?? 14}
-                    suffix="d"
-                    onCommit={(v) => changeSettings({ default_lead_time_days: v })}
-                  />
-                  <NumField
-                    label="Review every"
-                    title="How often you reorder, in days — the order must cover lead time plus this."
-                    value={settings?.review_period_days ?? 7}
-                    suffix="d"
-                    onCommit={(v) => changeSettings({ review_period_days: v })}
-                  />
-                  <label className="inline-flex items-center gap-1.5 text-xs text-[var(--ink-3)]">
-                    <span title="Probability of not stocking out. Higher service level = more safety stock.">
-                      Service level
-                    </span>
-                    <Select
-                      className="w-auto py-1"
-                      value={service.value}
-                      onChange={(e) => {
-                        const lvl = SERVICE_LEVELS.find((s) => s.value === Number(e.target.value));
-                        setService(lvl);
-                        changeSettings({ service_level: lvl.value });
-                      }}
-                    >
-                      {SERVICE_LEVELS.map((s) => (
-                        <option key={s.value} value={s.value}>
-                          {s.label}
-                        </option>
-                      ))}
-                    </Select>
-                  </label>
+          {tab === "forecast" &&
+            (active.busy ? (
+              <RunningState tab={tab} />
+            ) : active.rows?.length > 0 ? (
+              <div className="flex min-h-0 flex-col gap-5">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <SectionLabel>Inventory plan</SectionLabel>
+                  <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5">
+                    <NumField
+                      label="Lead time"
+                      title="Default supplier resupply time, in days. Products can override this."
+                      value={settings?.default_lead_time_days ?? 14}
+                      suffix="d"
+                      onCommit={(v) => changeSettings({ default_lead_time_days: v })}
+                    />
+                    <NumField
+                      label="Review every"
+                      title="How often you reorder, in days — the order must cover lead time plus this."
+                      value={settings?.review_period_days ?? 7}
+                      suffix="d"
+                      onCommit={(v) => changeSettings({ review_period_days: v })}
+                    />
+                    <label className="inline-flex items-center gap-1.5 text-xs text-[var(--ink-3)]">
+                      <span title="Probability of not stocking out. Higher service level = more safety stock.">
+                        Service level
+                      </span>
+                      <Select
+                        className="w-auto py-1"
+                        value={service.value}
+                        onChange={(e) => {
+                          const lvl = SERVICE_LEVELS.find((s) => s.value === Number(e.target.value));
+                          setService(lvl);
+                          changeSettings({ service_level: lvl.value });
+                        }}
+                      >
+                        {SERVICE_LEVELS.map((s) => (
+                          <option key={s.value} value={s.value}>
+                            {s.label}
+                          </option>
+                        ))}
+                      </Select>
+                    </label>
+                  </div>
                 </div>
+                <KpiStrip rows={active.rows} service={service} settings={settings} />
+                <Card className="p-4">
+                  <ForecastChart rows={active.rows} service={service} settings={settings} />
+                </Card>
+                <ResultsTable
+                  rows={active.rows}
+                  service={service}
+                  setService={setService}
+                  settings={settings}
+                  onInventoryChange={changeInventory}
+                  onInventoryResult={applyInventory}
+                  grain={grain}
+                />
               </div>
-              <KpiStrip rows={active.rows} service={service} settings={settings} />
-              <Card className="p-4">
-                <ForecastChart rows={active.rows} service={service} settings={settings} />
-              </Card>
-              <ResultsTable
-                rows={active.rows}
-                service={service}
-                setService={setService}
-                settings={settings}
-                onInventoryChange={changeInventory}
-                onInventoryResult={applyInventory}
-                grain={grain}
-              />
-            </div>
-          )}
+            ) : active.rows?.length === 0 ? (
+              <NoProducts />
+            ) : (
+              <EmptyState tab={tab} hasCatalog={hasCatalog} />
+            ))}
 
-          {!active.busy && active.rows?.length > 0 && tab === "accuracy" && (
-            <AccuracyResults rows={active.rows} />
+          {tab === "accuracy" && (
+            <div className="flex min-h-0 flex-col gap-4">
+              <div className="flex items-center justify-between">
+                <SectionLabel>Accuracy</SectionLabel>
+                <Segmented
+                  value={accuracyView}
+                  onChange={setAccuracyView}
+                  options={[
+                    { id: "track", label: "Track record" },
+                    { id: "backtest", label: "Backtest" },
+                  ]}
+                />
+              </div>
+              {accuracyView === "track" ? (
+                <Ledger reloadToken={ledgerToken} />
+              ) : active.busy ? (
+                <RunningState tab={tab} />
+              ) : active.rows?.length > 0 ? (
+                <AccuracyResults rows={active.rows} />
+              ) : active.rows?.length === 0 ? (
+                <NoProducts />
+              ) : (
+                <EmptyState tab={tab} hasCatalog={hasCatalog} />
+              )}
+            </div>
           )}
         </main>
       </div>
@@ -582,6 +599,38 @@ function NumField({ label, title, value, suffix, onCommit }) {
         {suffix ? <span className="pr-1.5 text-[var(--ink-3)]">{suffix}</span> : null}
       </span>
     </label>
+  );
+}
+
+// Small segmented toggle (e.g. Track record / Backtest inside the Accuracy tab).
+function Segmented({ value, onChange, options }) {
+  return (
+    <div className="inline-flex rounded-lg border border-[var(--line-strong)] bg-[var(--surface-2)] p-0.5 text-xs font-medium">
+      {options.map((o) => (
+        <button
+          key={o.id}
+          type="button"
+          onClick={() => onChange(o.id)}
+          className={`rounded-md px-2.5 py-1 transition-colors ${
+            value === o.id
+              ? "bg-[var(--surface)] text-[var(--ink)] shadow-sm"
+              : "text-[var(--ink-3)] hover:text-[var(--ink-2)]"
+          }`}
+        >
+          {o.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function NoProducts() {
+  return (
+    <Card className="p-10 text-center text-sm text-[var(--ink-3)]">
+      No products could be forecast from your catalog. Import a file with a{" "}
+      <span className="font-medium text-[var(--ink-2)]">Product Name</span> column and dated{" "}
+      <span className="font-medium text-[var(--ink-2)]">Quantity Sold …</span> columns.
+    </Card>
   );
 }
 

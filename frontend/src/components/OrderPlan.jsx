@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { optimizeBudget } from "../optimize";
-import { Card, formatNumber, SectionLabel } from "./ui";
+import { Card, formatNumber, SectionLabel, Stat } from "./ui";
 
 const money = (n) => `$${Math.round(Number(n) || 0).toLocaleString()}`;
 const pct = (x) => `${(x * 100).toFixed(1)}%`;
@@ -138,18 +138,6 @@ export default function OrderPlan({ rows, settings, service }) {
           </table>
         </div>
       </div>
-    </div>
-  );
-}
-
-function Stat({ label, value, sub, accent }) {
-  return (
-    <div className="bg-[var(--surface)] px-4 py-3">
-      <SectionLabel>{label}</SectionLabel>
-      <div className={`tnum mt-1 text-lg font-semibold ${accent ? "text-accent-600 dark:text-accent-400" : ""}`}>
-        {value}
-      </div>
-      {sub ? <div className="mt-0.5 text-[11px] text-[var(--ink-3)]">{sub}</div> : null}
     </div>
   );
 }

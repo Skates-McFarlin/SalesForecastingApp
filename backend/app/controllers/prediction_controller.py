@@ -19,8 +19,7 @@ from app.models.file import File
 from app.extensions import db
 from app.forecasting import selector, elasticity as elasticity_mod
 from app.forecasting.base import (
-    aggregate_interval, future_index, monthly_actuals, period_actuals, MONTHLY,
-    Forecast,
+    aggregate_interval, period_actuals, MONTHLY, Forecast,
 )
 from app.controllers.learning_controller import apply_correction
 from huggingface_hub import hf_hub_download

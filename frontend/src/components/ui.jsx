@@ -19,6 +19,20 @@ export function SectionLabel({ children, className = "" }) {
   );
 }
 
+// A small stat tile (label + value + optional subtext) used across the summary
+// strips. Sits inside a gap-px grid so tiles read as one panel.
+export function Stat({ label, value, sub, accent }) {
+  return (
+    <div className="bg-[var(--surface)] px-4 py-3">
+      <SectionLabel>{label}</SectionLabel>
+      <div className={`tnum mt-1 text-lg font-semibold ${accent ? "text-accent-600 dark:text-accent-400" : ""}`}>
+        {value}
+      </div>
+      {sub ? <div className="mt-0.5 text-[11px] text-[var(--ink-3)]">{sub}</div> : null}
+    </div>
+  );
+}
+
 export function Button({ variant = "primary", className = "", children, ...rest }) {
   const base =
     "inline-flex items-center justify-center gap-2 rounded-lg text-sm font-medium transition-colors " +
@@ -156,29 +170,13 @@ export function formatNumber(n) {
   return v.toLocaleString(undefined, { maximumFractionDigits: 0 });
 }
 
-// Service levels (probability of not stocking out) and their z-multipliers.
-// The forecast's ~80% conformal interval has an upper half-width of 1.2816
-// sigma, so we recover sigma from it and rescale to the chosen service level.
+// Service levels (probability of not stocking out) and their z-multipliers, used
+// to size safety stock from the forecast's demand spread.
 export const SERVICE_LEVELS = [
   { value: 0.9, label: "90%", z: 1.2816 },
   { value: 0.95, label: "95%", z: 1.6449 },
   { value: 0.99, label: "99%", z: 2.3263 },
 ];
-const Z80_HALF = 1.2816;
-
-// Suggested stock for a SKU over the horizon = expected demand + safety stock,
-// safety stock = z(service level) x sigma, sigma from the conformal interval.
-export function recommendation(row, z) {
-  const forecast = Number(row.Forecast || 0);
-  const low = Number(row.ForecastLow);
-  const high = Number(row.ForecastHigh);
-  if (!Number.isFinite(low) || !Number.isFinite(high) || high <= low) {
-    return { order: Math.round(forecast), safety: 0 };
-  }
-  const sigma = (high - low) / (2 * Z80_HALF);
-  const safety = z * sigma;
-  return { order: Math.round(forecast + safety), safety: Math.round(safety) };
-}
 
 // Round a raw order up to the case pack, then up to the minimum order quantity.
 function snapOrder(qty, moq, casePack) {

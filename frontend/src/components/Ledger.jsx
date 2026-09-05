@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { fetchLedger, fetchRun, fetchLearning } from "../api";
-import { Badge, Card, DeltaBadge, formatNumber, SectionLabel, Spinner } from "./ui";
+import { Badge, Card, DeltaBadge, formatNumber, SectionLabel, Spinner, Stat } from "./ui";
 
 // The decision & outcome ledger (Phase 1): every forecast the app made, and -
 // once real sales cover its window - how that forecast actually held up. This is
@@ -143,16 +143,6 @@ function Headline({ runs }) {
         value={coverage == null ? "—" : `${coverage.toFixed(0)}%`}
         sub="landed in the band"
       />
-    </div>
-  );
-}
-
-function Stat({ label, value, sub }) {
-  return (
-    <div className="bg-[var(--surface)] px-4 py-3">
-      <SectionLabel>{label}</SectionLabel>
-      <div className="tnum mt-1 text-lg font-semibold">{value}</div>
-      {sub ? <div className="mt-0.5 text-[11px] text-[var(--ink-3)]">{sub}</div> : null}
     </div>
   );
 }
