@@ -20,14 +20,15 @@ export function SectionLabel({ children, className = "" }) {
 }
 
 // A small stat tile (label + value + optional subtext) used across the summary
-// strips. Sits inside a gap-px grid so tiles read as one panel.
-export function Stat({ label, value, sub, accent }) {
+// strips. Sits inside a gap-px grid so tiles read as one panel. `accent` colors
+// the value with the brand accent; `tone` overrides it with a specific class
+// (e.g. a severity color) and wins over `accent`.
+export function Stat({ label, value, sub, accent, tone }) {
+  const valueColor = tone || (accent ? "text-accent-600 dark:text-accent-400" : "");
   return (
     <div className="bg-[var(--surface)] px-4 py-3">
       <SectionLabel>{label}</SectionLabel>
-      <div className={`tnum mt-1 text-lg font-semibold ${accent ? "text-accent-600 dark:text-accent-400" : ""}`}>
-        {value}
-      </div>
+      <div className={`tnum mt-1 text-lg font-semibold ${valueColor}`}>{value}</div>
       {sub ? <div className="mt-0.5 text-[11px] text-[var(--ink-3)]">{sub}</div> : null}
     </div>
   );

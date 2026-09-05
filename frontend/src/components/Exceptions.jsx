@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import { createPurchaseOrder } from "../api";
 import { deriveExceptions } from "../exceptions";
-import { Card, formatNumber, SectionLabel } from "./ui";
+import { Card, formatNumber, SectionLabel, Stat } from "./ui";
 
 const SEV = {
   critical: { dot: "bg-neg-500", ring: "border-neg-500/40", text: "text-neg-500 dark:text-neg-400", label: "Critical" },
@@ -40,12 +40,12 @@ export default function Exceptions({ rows, settings, service, onInventoryResult,
       {total > 0 && (
         <div className="grid grid-cols-2 gap-px overflow-hidden rounded-xl border border-[var(--line)] bg-[var(--line)] sm:grid-cols-4">
           {summary.map((s) => (
-            <div key={s.label} className="bg-[var(--surface)] px-4 py-3">
-              <SectionLabel>{s.label}</SectionLabel>
-              <div className={`tnum mt-1 text-xl font-semibold ${s.n ? s.tone : "text-[var(--ink-3)]"}`}>
-                {formatNumber(s.n)}
-              </div>
-            </div>
+            <Stat
+              key={s.label}
+              label={s.label}
+              value={formatNumber(s.n)}
+              tone={s.n ? s.tone : "text-[var(--ink-3)]"}
+            />
           ))}
         </div>
       )}

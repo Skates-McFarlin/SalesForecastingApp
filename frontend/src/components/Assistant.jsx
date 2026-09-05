@@ -77,16 +77,11 @@ function assembleSnapshot(question, { rows, settings, service, catalog, learning
 
   const products = resolveProducts(question, rows).map((r) => {
     const d = reorder(r, settings, z);
-    const c = r.ForecastCorrection;
     return {
       name: r.ProductName,
       sku: r.Sku,
       category: r.Category && r.Category !== "unknown" ? r.Category : null,
       forecast: Math.round(Number(r.Forecast || 0)),
-      correction:
-        c && c.bias && c.bias !== 1
-          ? `${c.bias > 1 ? "+" : ""}${Math.round((c.bias - 1) * 100)}% (learned over ${c.n} cycles)`
-          : null,
       yoy: r["% Change from Previous Year"] !== "N/A" ? `${r["% Change from Previous Year"]}%` : null,
       on_hand: r.OnHand != null ? r.OnHand : null,
       cover_days: d.coverDays != null ? Math.round(d.coverDays) : null,

@@ -1052,16 +1052,9 @@ def _forecast_core(json_data, extra_context_by_group, duration,
                 # state (None for the upload path, which has no catalog).
                 "DailyRate": round(daily_rate, 4),
                 "DailySigma": round(daily_sigma, 4),
+                # Forecast total over the window - stored in the ledger as the
+                # learning signal for the self-grading track record (observed bias).
                 "ForecastRaw": round(raw_window_total),
-                # Closed-loop correction applied to this SKU (None if not yet learned).
-                "ForecastCorrection": (
-                    {
-                        "bias": correction.get("bias"),
-                        "width": correction.get("width"),
-                        "n": correction.get("n"),
-                    }
-                    if correction else None
-                ),
                 **((inventory_by_key or {}).get(group_key, {})),
             }
         )
@@ -1409,6 +1402,14 @@ def _error_metrics_core(json_data, extra_context_by_group, start_date, duration,
             mape = np.mean(
                 np.where(actual_arr != 0, np.abs((yhat_arr - actual_arr) / actual_arr), 0)
             ) * 100
+        # MASE: MAE scaled by the in-sample one-step naive error on the training
+        # series. Scale-free and, unlike MAPE, well-defined on intermittent SKUs
+        # with zero-demand periods (MAPE either divides by ~0 or ignores them).
+        # < 1.0 means the model beats a naive one-step forecast. None when the
+        # training series is flat (scale 0), where MASE is undefined.
+        train_vals = train_df[train_df[group_col] == g].sort_values("ds")["y"].to_numpy(dtype=float)
+        scale = np.mean(np.abs(np.diff(train_vals))) if train_vals.size > 1 else 0.0
+        mase = float(round(mae / scale, 2)) if scale > 0 else None
 
         error_results.append(
             {
@@ -1420,6 +1421,7 @@ def _error_metrics_core(json_data, extra_context_by_group, start_date, duration,
                     "MAE": float(round(mae, 2)),
                     "RMSE": float(round(rmse, 2)),
                     "MAPE": f"{float(round(mape, 2))}%",
+                    "MASE": mase,
                 },
             }
         )

@@ -72,7 +72,11 @@ export function optimizeBudget(rows, settings, z, budget) {
     const mu = r * P;
     const sigma = Math.max(1e-6, s * Math.sqrt(P));
     const q0 = d.position;
-    const S = mu + z * sigma;
+    // Target = the SAME order-up-to the Forecast tab shows (count-aware for
+    // intermittent demand), so "Needed" here matches "Suggested order" there.
+    // mu/sigma below still drive the normal marginal-value ranking that spreads
+    // a tight budget across SKUs (a documented approximation of the allocation).
+    const S = Math.max(q0, d.orderUpTo);
     const ideal = Math.max(0, S - q0);
     if (ideal <= 0) continue; // already covered - no order needed
     items.push({ key: row.Sku || row.ProductName, name: row.ProductName, sku: row.Sku, cost, mu, sigma, q0, S, ideal });

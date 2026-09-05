@@ -73,8 +73,6 @@ def _facts_from_snapshot(snap):
             seg.append(f"category {pr['category']}")
         if pr.get("forecast") is not None:
             seg.append(f"forecast {pr['forecast']} units")
-        if pr.get("correction"):
-            seg.append(f"adjusted {pr['correction']} from its track record")
         if pr.get("yoy") is not None:
             seg.append(f"{pr['yoy']} vs last year")
         if pr.get("on_hand") is not None:

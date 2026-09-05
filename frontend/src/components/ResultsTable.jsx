@@ -20,6 +20,7 @@ const COMPARISON_COLUMNS = [
 ];
 
 const THIN_HISTORY_MONTHS = 6;
+const THIN_HISTORY_WEEKS = 12;
 const MOVER_COUNT = 3;
 const PAGE_SIZE_OPTIONS = [25, 50, 100];
 
@@ -482,8 +483,6 @@ function RowGroup({ row, columnCount, showComparison, share, dec, service, setti
 
             <ForecastBasis method={row.ForecastMethod} model={row.ForecastModel} />
 
-            {row.ForecastCorrection && <CorrectionNote c={row.ForecastCorrection} />}
-
             <div className="mb-3 text-[11px] text-[var(--ink-3)]">
               Forecast {formatNumber(row.Forecast)}
               {row.ForecastLow != null && row.ForecastHigh != null
@@ -595,26 +594,6 @@ function InvInput({ label, value, placeholder, onCommit }) {
         className="tnum w-full rounded-md border border-[var(--line-strong)] bg-[var(--surface)] px-2 py-1 text-right text-sm text-[var(--ink)] outline-none focus:border-accent-500"
       />
     </label>
-  );
-}
-
-// The closed loop (Phase 5): shows when this SKU's forecast was adjusted from its
-// own track record — a learned bias and/or a recalibrated interval.
-function CorrectionNote({ c }) {
-  const bias = c.bias != null && c.bias !== 1 ? c.bias : null;
-  const width = c.width != null && c.width !== 1 ? c.width : null;
-  if (!bias && !width) return null;
-  const parts = [];
-  if (bias) parts.push(`forecast ${bias > 1 ? "+" : ""}${Math.round((bias - 1) * 100)}%`);
-  if (width) parts.push(width > 1 ? "wider interval" : "tighter interval");
-  return (
-    <div className="mb-3 flex items-center gap-1.5 text-[11px] text-accent-600 dark:text-accent-400">
-      <svg className="size-3 shrink-0" viewBox="0 0 14 14" fill="none">
-        <path d="M2 7a5 5 0 0 1 8.5-3.5M12 7a5 5 0 0 1-8.5 3.5" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
-        <path d="M10.5 1.5v2h-2M3.5 12.5v-2h2" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" />
-      </svg>
-      Adjusted from your track record — {parts.join(", ")} (learned over {c.n} cycle{c.n === 1 ? "" : "s"})
-    </div>
   );
 }
 
@@ -819,7 +798,7 @@ function PriceWhatIf({ elasticity, source, forecast }) {
 function HistoryValue({ months, unit = "mo" }) {
   if (months == null) return <span className="text-[var(--ink-3)]">—</span>;
   const word = unit === "wk" ? "week" : "month";
-  const thin = unit === "mo" && months < THIN_HISTORY_MONTHS;
+  const thin = months < (unit === "wk" ? THIN_HISTORY_WEEKS : THIN_HISTORY_MONTHS);
   return (
     <span
       title={

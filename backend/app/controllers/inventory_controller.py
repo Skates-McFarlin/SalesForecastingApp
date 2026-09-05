@@ -139,8 +139,13 @@ def reorder_policy(daily_rate, daily_sigma, on_hand, on_order,
     distribution - negative binomial when overdispersed (the on-and-off
     signature), Poisson otherwise - because a symmetric normal z*sigma
     under-delivers the stated service on right-skewed demand. High-volume demand
-    keeps the normal approximation (accurate there, and cheaper). Mirror of the
-    frontend reorder() in ui.jsx - keep the two in lock-step.
+    keeps the normal approximation (accurate there, and cheaper).
+
+    NOTE: the live app computes reorder decisions in the frontend `reorder()`
+    (ui.jsx) so on-hand/lead-time/service edits recompute instantly without a
+    re-forecast - THAT is authoritative for what users see. This function is the
+    Python mirror (used by scratchpad simulations and available to any backend
+    path); keep it numerically in lock-step with ui.jsx.
     """
     r = max(0.0, float(daily_rate or 0.0))
     s = max(0.0, float(daily_sigma or 0.0))
