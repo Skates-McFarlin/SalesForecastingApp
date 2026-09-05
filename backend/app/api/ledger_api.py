@@ -1,8 +1,19 @@
 from flask import Blueprint, jsonify
 
 from app.controllers.ledger_controller import list_runs, run_detail
+from app.controllers.learning_controller import learning_summary
 
 ledger_api_bp = Blueprint("ledger_api", __name__)
+
+
+@ledger_api_bp.route("/learning", methods=["GET"])
+def get_learning():
+    """Closed-loop summary (Phase 5): how many SKUs the app has learned
+    corrections for, from how many reconciled forecasts."""
+    try:
+        return jsonify(learning_summary()), 200
+    except Exception as e:  # noqa: BLE001
+        return jsonify({"error": str(e)}), 500
 
 
 @ledger_api_bp.route("", methods=["GET"])

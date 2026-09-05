@@ -83,12 +83,14 @@ def record_run(forecast_results, start_date, horizon, grain,
             order, safety = _recommend(fc, low, high, z)
             sku = r.get("Sku")
             name = r.get("ProductName") or ""
+            raw = r.get("ForecastRaw")
             db.session.add(LedgerItem(
                 run_id=run.id,
                 product_key=(sku or name),
                 product_name=name,
                 sku=sku,
                 forecast=fc,
+                raw_forecast=(float(raw) if raw is not None else fc),
                 forecast_low=(float(low) if low is not None else None),
                 forecast_high=(float(high) if high is not None else None),
                 recommended_order=float(order),

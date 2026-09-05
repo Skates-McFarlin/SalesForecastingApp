@@ -5,6 +5,7 @@ import {
 } from "./api";
 import { catalogRange, cmp, dateBounds, durationThrough, monthRangeForYear } from "./dates";
 import AccuracyResults from "./components/AccuracyResults";
+import Assistant from "./components/Assistant";
 import ControlPanel from "./components/ControlPanel";
 import Exceptions from "./components/Exceptions";
 import ForecastChart from "./components/ForecastChart";
@@ -16,6 +17,7 @@ import { Card, ErrorNote, SectionLabel, Select, SERVICE_LEVELS } from "./compone
 
 const TABS = [
   { id: "attention", label: "Attention" },
+  { id: "assistant", label: "Assistant" },
   { id: "forecast", label: "Forecast" },
   { id: "orderplan", label: "Order plan" },
   { id: "accuracy", label: "Accuracy" },
@@ -283,7 +285,13 @@ export default function App() {
             onCancel={() => abortRef.current?.abort()}
             busy={active.busy}
             elapsed={elapsed}
-            mode={tab === "attention" || tab === "orderplan" ? "forecast" : tab}
+            mode={
+              tab === "attention" || tab === "orderplan"
+                ? "forecast"
+                : tab === "assistant"
+                  ? "ledger"
+                  : tab
+            }
             origin={origin}
             fcWindow={fcWindow}
             onWindow={setFcWindow}
@@ -341,13 +349,28 @@ export default function App() {
             />
           )}
 
-          {tab !== "ledger" && tab !== "attention" && tab !== "orderplan" && active.busy && <RunningState tab={tab} />}
+          {tab === "assistant" && active.busy && <RunningState tab={tab} />}
+          {tab === "assistant" && !active.busy && active.rows?.length > 0 && (
+            <Assistant rows={active.rows} settings={settings} service={service} catalog={catalog} />
+          )}
+          {tab === "assistant" && !active.busy && !active.rows?.length && (
+            <RunEmpty
+              hasCatalog={!!catalog && !catalog.empty}
+              emptyResult={active.rows?.length === 0}
+              onRun={run}
+              title="Ask about your business"
+              desc="Generate a forecast, then ask me anything — what needs you, how a product’s doing, or what to reorder."
+              ctaLabel="Generate forecast"
+            />
+          )}
 
-          {tab !== "ledger" && tab !== "attention" && tab !== "orderplan" && !active.busy && !active.rows && !active.error && (
+          {tab !== "ledger" && tab !== "attention" && tab !== "orderplan" && tab !== "assistant" && active.busy && <RunningState tab={tab} />}
+
+          {tab !== "ledger" && tab !== "attention" && tab !== "orderplan" && tab !== "assistant" && !active.busy && !active.rows && !active.error && (
             <EmptyState tab={tab} hasCatalog={!!catalog && !catalog.empty} />
           )}
 
-          {tab !== "ledger" && tab !== "attention" && tab !== "orderplan" && !active.busy && active.rows?.length === 0 && (
+          {tab !== "ledger" && tab !== "attention" && tab !== "orderplan" && tab !== "assistant" && !active.busy && active.rows?.length === 0 && (
             <Card className="p-10 text-center text-sm text-[var(--ink-3)]">
               No products could be forecast from your catalog. Import a file with a{" "}
               <span className="font-medium text-[var(--ink-2)]">Product Name</span> column and

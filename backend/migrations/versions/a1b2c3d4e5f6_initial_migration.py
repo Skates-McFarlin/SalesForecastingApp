@@ -105,6 +105,7 @@ def upgrade():
         sa.Column('product_name', sa.String(length=200), nullable=False),
         sa.Column('sku', sa.String(length=120), nullable=True),
         sa.Column('forecast', sa.Float(), nullable=False),
+        sa.Column('raw_forecast', sa.Float(), nullable=True),
         sa.Column('forecast_low', sa.Float(), nullable=True),
         sa.Column('forecast_high', sa.Float(), nullable=True),
         sa.Column('recommended_order', sa.Float(), nullable=True),

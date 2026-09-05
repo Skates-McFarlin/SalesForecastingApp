@@ -180,3 +180,20 @@ export async function fetchLedger() {
 export async function fetchRun(runId) {
   return asJson(await fetch(`${BASE}/api/ledger/${runId}`));
 }
+
+// Closed-loop summary (Phase 5): how many SKUs the app has learned to correct.
+export async function fetchLearning() {
+  return asJson(await fetch(`${BASE}/api/ledger/learning`));
+}
+
+// The assistant (Phase 6): answers a question grounded in the client-computed
+// snapshot of real figures. The LLM only phrases the answer.
+export async function askAssistant(question, snapshot, history) {
+  return asJson(
+    await fetch(`${BASE}/api/assistant`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ question, snapshot, history }),
+    })
+  );
+}

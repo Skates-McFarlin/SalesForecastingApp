@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { fetchLedger, fetchRun } from "../api";
+import { fetchLedger, fetchRun, fetchLearning } from "../api";
 import { Badge, Card, DeltaBadge, formatNumber, SectionLabel, Spinner } from "./ui";
 
 // The decision & outcome ledger (Phase 1): every forecast the app made, and -
@@ -7,6 +7,7 @@ import { Badge, Card, DeltaBadge, formatNumber, SectionLabel, Spinner } from "./
 // an honest track record on the user's own business, not a synthetic backtest.
 export default function Ledger({ reloadToken }) {
   const [runs, setRuns] = useState(null);
+  const [learning, setLearning] = useState(null);
   const [error, setError] = useState(null);
   const [expanded, setExpanded] = useState(null);
   const [details, setDetails] = useState({});
@@ -17,6 +18,9 @@ export default function Ledger({ reloadToken }) {
     fetchLedger()
       .then((data) => live && setRuns(data))
       .catch((err) => live && setError(err.message));
+    fetchLearning()
+      .then((data) => live && setLearning(data))
+      .catch(() => {});
     return () => {
       live = false;
     };
@@ -69,6 +73,22 @@ export default function Ledger({ reloadToken }) {
       </div>
 
       {scored.length > 0 && <Headline runs={scored} />}
+
+      {learning && learning.corrected_skus > 0 && (
+        <div className="flex items-start gap-2.5 rounded-xl border border-accent-500/30 bg-accent-500/5 px-4 py-3">
+          <svg className="mt-0.5 size-4 shrink-0 text-accent-600 dark:text-accent-400" viewBox="0 0 16 16" fill="none">
+            <path d="M2 8a6 6 0 0 1 10-4.5M14 8a6 6 0 0 1-10 4.5" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
+            <path d="M12 2v2.2H9.8M4 14v-2.2h2.2" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
+          </svg>
+          <p className="text-sm leading-relaxed text-[var(--ink-2)]">
+            <span className="font-medium text-[var(--ink)]">The app is learning your business.</span>{" "}
+            From {formatNumber(learning.reconciled_items)} graded forecasts it now auto-corrects{" "}
+            <span className="font-medium text-accent-600 dark:text-accent-400">{formatNumber(learning.corrected_skus)}</span>{" "}
+            {learning.corrected_skus === 1 ? "product" : "products"} — adjusting the forecast where your sales
+            consistently run above or below it, so future orders get more accurate.
+          </p>
+        </div>
+      )}
 
       <div className="overflow-hidden rounded-xl border border-[var(--line)]">
         {runs.map((run) => (

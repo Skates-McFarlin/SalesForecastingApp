@@ -20,7 +20,11 @@ class LedgerItem(db.Model):
     product_name = db.Column(db.String(200), nullable=False)
     sku = db.Column(db.String(120), nullable=True)
 
-    forecast = db.Column(db.Float, nullable=False)          # point forecast, summed
+    forecast = db.Column(db.Float, nullable=False)          # point forecast (as shown), summed
+    # The RAW ensemble forecast before any closed-loop correction (Phase 5).
+    # Learning measures bias against this so the correction converges to the true
+    # model bias rather than its square root; `forecast` stays what was shown.
+    raw_forecast = db.Column(db.Float, nullable=True)
     forecast_low = db.Column(db.Float, nullable=True)       # ~80% band, summed
     forecast_high = db.Column(db.Float, nullable=True)
     recommended_order = db.Column(db.Float, nullable=True)  # forecast + safety stock
