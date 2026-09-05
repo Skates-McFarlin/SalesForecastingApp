@@ -50,9 +50,11 @@ def _facts_from_snapshot(snap):
         if tr.get("typical_miss") is not None:
             parts.append(f"typical miss {tr.get('typical_miss')}")
         if tr.get("reconciled"):
-            parts.append(f"{tr.get('reconciled')} forecasts graded")
-        if tr.get("corrected_skus"):
-            parts.append(f"auto-correcting {tr.get('corrected_skus')} products from that history")
+            parts.append(f"{tr.get('reconciled')} forecasts graded against real sales")
+        if tr.get("realized_coverage") is not None:
+            parts.append(f"reality landed inside the stated range {tr.get('realized_coverage')} of the time")
+        if tr.get("biased_skus"):
+            parts.append(f"{tr.get('biased_skus')} products flagged as running consistently high or low")
         if parts:
             lines.append("Track record: " + "; ".join(parts) + ".")
 

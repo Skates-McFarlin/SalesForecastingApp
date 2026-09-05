@@ -13,6 +13,8 @@ re-forecasting. Keep the two in lock-step - see reorder_policy() below.
 import math
 from datetime import datetime
 
+from scipy.stats import norm, nbinom, poisson
+
 from app.extensions import db
 from app.models.product import Product
 from app.models.settings import Settings
@@ -128,10 +130,17 @@ def reorder_policy(daily_rate, daily_sigma, on_hand, on_order,
     """Periodic-review base-stock policy. Returns the reorder decision.
 
     Protection interval P = lead time + review period (you must survive on what
-    you order until the NEXT order arrives). Demand over P is r*P with spread
-    z*sigma*sqrt(P); order up to that level, net of what you already have and
-    have coming. The reorder point (for the "order now" flag) is the lead-time
-    demand plus its safety. daily_rate/daily_sigma come from the forecast.
+    you order until the NEXT order arrives). Order up to the target service-level
+    quantile of demand over P, net of what you already have and have coming; the
+    reorder point (for the "order now" flag) is the same quantile over the lead
+    time L. daily_rate/daily_sigma come from the forecast.
+
+    For LOW-COUNT (intermittent) demand the quantile comes from a count
+    distribution - negative binomial when overdispersed (the on-and-off
+    signature), Poisson otherwise - because a symmetric normal z*sigma
+    under-delivers the stated service on right-skewed demand. High-volume demand
+    keeps the normal approximation (accurate there, and cheaper). Mirror of the
+    frontend reorder() in ui.jsx - keep the two in lock-step.
     """
     r = max(0.0, float(daily_rate or 0.0))
     s = max(0.0, float(daily_sigma or 0.0))
@@ -140,10 +149,24 @@ def reorder_policy(daily_rate, daily_sigma, on_hand, on_order,
     P = L + R
     position = float(on_hand or 0.0) + float(on_order or 0.0)
 
+    tau = float(norm.cdf(z))
+    COUNT_MAX = 120  # above this the normal approximation (CLT) is accurate
+
+    def up_to(mu, sd):
+        if mu <= 0:
+            return 0.0
+        if mu > COUNT_MAX:
+            return mu + z * sd
+        var = sd * sd
+        if var > mu * 1.05:                       # overdispersed -> negative binomial
+            r_nb = mu * mu / (var - mu)
+            return float(nbinom.ppf(tau, r_nb, mu / var))
+        return float(poisson.ppf(tau, mu))        # Poisson
+
     mu_P = r * P
-    safety = z * s * math.sqrt(P)
-    order_up_to = mu_P + safety
-    reorder_point = r * L + z * s * math.sqrt(L)
+    order_up_to = up_to(mu_P, s * math.sqrt(P))
+    safety = max(0.0, order_up_to - mu_P)
+    reorder_point = up_to(r * L, s * math.sqrt(L))
 
     raw_order = max(0.0, order_up_to - position)
     order = snap_order(raw_order, moq, case_pack)

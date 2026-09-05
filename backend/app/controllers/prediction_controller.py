@@ -21,7 +21,6 @@ from app.forecasting import selector, elasticity as elasticity_mod
 from app.forecasting.base import (
     aggregate_interval, period_actuals, MONTHLY, Forecast,
 )
-from app.controllers.learning_controller import apply_correction
 from huggingface_hub import hf_hub_download
 import os
 
@@ -758,7 +757,6 @@ def predict_from_catalog(duration, window_start=None):
     from app.controllers.catalog_controller import catalog_to_json_data, catalog_summary
     from app.controllers import ledger_controller
     from app.controllers.inventory_controller import inventory_by_key
-    from app.controllers.learning_controller import corrections_by_key
 
     json_data, extra_context_by_group, grain = catalog_to_json_data()
     if not json_data:
@@ -768,7 +766,6 @@ def predict_from_catalog(duration, window_start=None):
         json_data, extra_context_by_group, duration,
         file_id=None, grain=grain, window_start=window_start,
         inventory_by_key=inventory_by_key(),
-        corrections=corrections_by_key(),
     )
 
     # Record the recommendation (best-effort; never blocks the forecast). Every
@@ -794,7 +791,7 @@ def predict_from_catalog(duration, window_start=None):
 
 def _forecast_core(json_data, extra_context_by_group, duration,
                    file_id=None, grain=MONTHLY, window_start=None,
-                   inventory_by_key=None, corrections=None):
+                   inventory_by_key=None):
     """Shared forecasting pipeline over already-parsed data, whichever source it
     came from (an upload or the stored catalog) and at whichever grain.
 
@@ -943,16 +940,15 @@ def _forecast_core(json_data, extra_context_by_group, duration,
         extra_context = extra_context_by_group.get(group_key, {})
 
         model_label, fc = forecasts[group_key]
-        # Closed loop (Phase 5): correct this SKU's forecast from what actually
-        # happened on past forecasts - scale the point forecast by the learned
-        # bias and rescale the band to hit its target coverage. Applied here so
-        # the correction flows into the interval, reorder, exceptions, and budget.
-        correction = (corrections or {}).get(group_key)
-        # Raw (pre-correction) forecast over the reported window - the honest
-        # learning signal the ledger stores so corrections converge correctly.
+        # Forecast total over the reported window - stored in the ledger as the
+        # learning signal so the app can later grade this forecast against real
+        # sales (observed bias + realized coverage, surfaced as a track record).
+        # We do NOT auto-rescale future forecasts from it: measured on real M5
+        # retail, ledger-learned bias/width corrections were net-negative (bias is
+        # mostly noise cycle-to-cycle, and the width rescale fights the already-
+        # calibrated conformal band). The ledger earns its keep as honest
+        # accountability, not as an auto-corrector.
         raw_window_total = float(np.sum(np.asarray(fc.yhat, dtype=float)[win_mask]))
-        if correction:
-            fc = apply_correction(fc, correction)
         # Current daily demand rate/spread (near-term, from the edge) - the
         # ingredients the client (and the simulator) turn into a grounded reorder
         # decision. Computed from the full edge-anchored forecast, not the display

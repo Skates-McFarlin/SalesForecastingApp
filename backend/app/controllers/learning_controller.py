@@ -1,43 +1,35 @@
-"""The closed loop - Phase 5.
+"""Self-grading track record (formerly the "closed loop").
 
-The app grades its own past forecasts (the Phase 1 ledger records forecast +
-realized actual per SKU). Here we turn that history into per-SKU CORRECTIONS:
+The Phase 1 ledger records each forecast plus the realized actual once its
+window closes. This module turns that history into an honest, per-SKU **track
+record**: how far the app's forecasts have actually run high or low (observed
+bias) and how often reality landed inside the stated band (realized coverage).
 
-- **bias**: if a product's sales consistently run above/below what we forecast,
-  scale future forecasts to close that gap.
-- **width**: if a product's realized errors land outside the forecast band more
-  (or less) often than the band claims, widen (or tighten) it to hit its target
-  coverage - so the safety stock derived from it is honestly sized.
-
-Both are damped toward "no correction" by how few observations there are
-(empirical-Bayes shrinkage) and clamped, so a couple of noisy cycles can't wildly
-rescale a forecast. Applied in the forecast pipeline, so corrections propagate to
-the reorder, the exceptions, and the budget plan. This is what makes the app get
-measurably better at THIS business the longer it runs.
+It deliberately does **not** auto-rescale future forecasts. An earlier version
+did (learned a bias multiplier and a band-width multiplier and applied them),
+and it looked great on a synthetic simulator that injected a *persistent* bias.
+Measured on real M5 retail demand across a multi-cycle walk-forward, that
+auto-correction was net-negative on every demand class: the learned bias is
+mostly cycle-to-cycle noise (applying it added ~6-10% MASE), and the width
+rescale fought the already-calibrated conformal band (coverage 82% -> 68-73%).
+So the ledger earns its keep as accountability and transparency - a forecaster
+you can check - not as a self-tuning knob that quietly makes things worse.
 """
-import statistics
 from collections import defaultdict
 
 import numpy as np
 
 from app.models.ledger_item import LedgerItem
 
-MIN_BIAS_OBS = 2   # reconciled cycles before trusting a bias correction
-MIN_WIDTH_OBS = 3  # more for interval calibration (needs a spread of errors)
-BIAS_CLAMP = (0.6, 1.6)
-WIDTH_CLAMP = (0.6, 1.8)
+MIN_GRADE_OBS = 2      # reconciled cycles before a SKU gets a track record
+BIAS_FLAG_THRESHOLD = 0.15  # |observed bias - 1| beyond this = "runs consistently high/low"
 
 
-def _shrink(raw, n, k):
-    """Pull a raw multiplier toward 1.0 when observations are few: with n=k the
-    correction is halved, approaching the raw value as n grows."""
-    return 1.0 + (raw - 1.0) * (n / (n + k))
-
-
-def corrections_by_key():
-    """{product_key: {bias, width, n, coverage}} learned from reconciled ledger
-    items. A key appears only when it has enough history for at least one
-    correction."""
+def observed_by_key():
+    """{product_key: {bias, coverage, n}} - OBSERVED diagnostics from reconciled
+    ledger items (not corrections applied to anything). `bias` is the median
+    ratio of actual to what we forecast (>1 = we under-forecast); `coverage` is
+    the fraction of cycles that landed inside the stated band."""
     rows = LedgerItem.query.filter_by(reconciled=True).all()
     by_key = defaultdict(list)
     for it in rows:
@@ -46,75 +38,47 @@ def corrections_by_key():
 
     out = {}
     for key, items in by_key.items():
-        # Bias is measured against the RAW forecast (pre-correction) so it
-        # converges to the true model bias, not its square root.
+        if len(items) < MIN_GRADE_OBS:
+            continue
         ratios = []
         for it in items:
             base = it.raw_forecast if it.raw_forecast is not None else it.forecast
             if base and base > 0:
                 ratios.append(it.actual / base)
-        pairs = [
-            ((it.forecast_high - it.forecast_low) / 2.0, abs(it.actual - it.forecast))
-            for it in items
-            if it.forecast_low is not None and it.forecast_high is not None
-            and it.forecast_high > it.forecast_low
-        ]
         within = [
             it for it in items
             if it.forecast_low is not None and it.forecast_high is not None
             and it.forecast_low <= it.actual <= it.forecast_high
         ]
-
-        corr = {}
-        if len(ratios) >= MIN_BIAS_OBS:
-            b = _shrink(statistics.median(ratios), len(ratios), 2)
-            corr["bias"] = round(min(BIAS_CLAMP[1], max(BIAS_CLAMP[0], b)), 3)
-        if len(pairs) >= MIN_WIDTH_OBS:
-            halfs = [p[0] for p in pairs]
-            errs = [p[1] for p in pairs]
-            avg_half = statistics.mean(halfs)
-            if avg_half > 0:
-                # Half-width that WOULD have covered ~80% of realized errors,
-                # relative to the band we actually showed.
-                w = _shrink(float(np.quantile(errs, 0.8)) / avg_half, len(pairs), 3)
-                corr["width"] = round(min(WIDTH_CLAMP[1], max(WIDTH_CLAMP[0], w)), 3)
-
-        if corr:
-            corr["n"] = len(items)
-            corr["coverage"] = round(len(within) / len(items), 3)
-            out[key] = corr
+        rec = {"n": len(items), "coverage": round(len(within) / len(items), 3)}
+        if ratios:
+            rec["bias"] = round(float(np.median(ratios)), 3)
+        out[key] = rec
     return out
 
 
-def apply_correction(fc, corr):
-    """Return a corrected Forecast: scale the point forecast by the learned bias
-    and rescale the band around it by the learned width. Non-destructive."""
-    from app.forecasting.base import Forecast, clip_nonneg
-
-    if not corr:
-        return fc
-    bias = corr.get("bias", 1.0)
-    width = corr.get("width", 1.0)
-    yhat = np.asarray(fc.yhat, dtype=float)
-    high = np.asarray(fc.high, dtype=float)
-    low = np.asarray(fc.low, dtype=float)
-
-    yhat_c = clip_nonneg(yhat * bias)
-    up = np.maximum(0.0, (high - yhat)) * width
-    dn = np.maximum(0.0, (yhat - low)) * width
-    return Forecast(yhat=yhat_c, low=clip_nonneg(yhat_c - dn), high=yhat_c + up)
-
-
 def learning_summary():
-    """Catalog-wide view of the closed loop for the Track record tab: how many
-    SKUs the app has learned corrections for, and the realized band coverage."""
-    corr = corrections_by_key()
+    """Catalog-wide self-grading view for the Track record tab: how many
+    forecasts have been graded, how many SKUs run consistently high or low, and
+    the realized band coverage overall."""
+    obs = observed_by_key()
     reconciled = LedgerItem.query.filter_by(reconciled=True).count()
-    biased = sum(1 for c in corr.values() if "bias" in c)
-    calibrated = sum(1 for c in corr.values() if "width" in c)
+    banded = LedgerItem.query.filter(
+        LedgerItem.reconciled.is_(True),
+        LedgerItem.forecast_low.isnot(None),
+        LedgerItem.forecast_high.isnot(None),
+    ).all()
+    covered = sum(
+        1 for it in banded
+        if it.actual is not None and it.forecast_low <= it.actual <= it.forecast_high
+    )
+    biased = sum(
+        1 for c in obs.values()
+        if "bias" in c and abs(c["bias"] - 1.0) >= BIAS_FLAG_THRESHOLD
+    )
     return {
         "reconciled_items": reconciled,
-        "corrected_skus": len(corr),
-        "bias_skus": biased,
-        "width_skus": calibrated,
+        "graded_skus": len(obs),
+        "biased_skus": biased,
+        "coverage": round(covered / len(banded), 3) if banded else None,
     }

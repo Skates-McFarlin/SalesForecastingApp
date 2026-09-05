@@ -118,7 +118,13 @@ function assembleSnapshot(question, { rows, settings, service, catalog, learning
       expected_service_full: pct(full.serviceIfFull),
     },
     track_record: learning
-      ? { corrected_skus: learning.corrected_skus, reconciled: learning.reconciled_items, typical_miss: miss }
+      ? {
+          graded_skus: learning.graded_skus,
+          reconciled: learning.reconciled_items,
+          realized_coverage: learning.coverage != null ? pct(learning.coverage) : null,
+          biased_skus: learning.biased_skus,
+          typical_miss: miss,
+        }
       : miss
         ? { typical_miss: miss }
         : null,
