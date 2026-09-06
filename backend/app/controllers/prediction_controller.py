@@ -24,8 +24,8 @@ from app.forecasting.base import (
 from huggingface_hub import hf_hub_download
 import os
 
-GGUF_REPO_ID = "Qwen/Qwen3-4B-GGUF"
-GGUF_FILENAME = "Qwen3-4B-Q4_K_M.gguf"
+GGUF_REPO_ID = "unsloth/Qwen3-1.7B-GGUF"
+GGUF_FILENAME = "Qwen3-1.7B-Q4_K_M.gguf"
 
 LLAMA_SERVER_HOST = "127.0.0.1"
 
@@ -33,9 +33,9 @@ LLAMA_SERVER_HOST = "127.0.0.1"
 # of install-dir permissions) - same pattern as the SQLite DB path.
 _appdata = os.getenv("LOCALAPPDATA")
 MODEL_DIR = (
-    os.path.join(_appdata, "Insighta", "models", "qwen3_4b_gguf")
+    os.path.join(_appdata, "Insighta", "models", "qwen3_1_7b_q4")
     if _appdata
-    else os.path.join(os.path.dirname(__file__), "..", "models", "qwen3_4b_gguf")
+    else os.path.join(os.path.dirname(__file__), "..", "models", "qwen3_1_7b_q4")
 )
 MODEL_FILE = os.path.join(MODEL_DIR, GGUF_FILENAME)
 
