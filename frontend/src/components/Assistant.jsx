@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { askAssistant, fetchLearning, fetchLedger } from "../api";
+import { askAssistant, fetchLearning, fetchLedger, fetchBriefing } from "../api";
 import { deriveExceptions } from "../exceptions";
 import { optimizeBudget } from "../optimize";
 import { reorder, SectionLabel, Spinner } from "./ui";
@@ -134,12 +134,23 @@ export default function Assistant({ rows, settings, service, catalog }) {
   const [busy, setBusy] = useState(false);
   const [learning, setLearning] = useState(null);
   const [ledger, setLedger] = useState(null);
+  const [brief, setBrief] = useState(null);
   const scrollRef = useRef(null);
 
   useEffect(() => {
     fetchLearning().then(setLearning).catch(() => {});
     fetchLedger().then(setLedger).catch(() => {});
   }, [rows]);
+
+  // Proactive "here's what matters today" - fetched once on open. Sends live
+  // attention counts so an urgent stockout leads; trends/trust come server-side.
+  useEffect(() => {
+    setBrief(null);
+    const snap = assembleSnapshot("", { rows, settings, service, catalog, learning, ledger });
+    fetchBriefing({ attention: snap.attention })
+      .then((r) => setBrief(r.briefing || null))
+      .catch(() => {});
+  }, [rows, settings, service]);
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
@@ -173,6 +184,18 @@ export default function Assistant({ rows, settings, service, catalog }) {
       </div>
 
       <div ref={scrollRef} className="mt-4 min-h-0 flex-1 space-y-3 overflow-y-auto pb-2">
+        {messages.length === 0 && brief && (
+          <div className="flex items-start gap-2.5 rounded-xl border border-accent-500/30 bg-accent-500/5 px-4 py-3">
+            <svg className="mt-0.5 size-4 shrink-0 text-accent-600 dark:text-accent-400" viewBox="0 0 16 16" fill="none">
+              <path d="M8 1.5v2M8 12.5v2M14.5 8h-2M3.5 8h-2M12.6 3.4l-1.4 1.4M4.8 11.2l-1.4 1.4M12.6 12.6l-1.4-1.4M4.8 4.8 3.4 3.4" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
+              <circle cx="8" cy="8" r="2.2" stroke="currentColor" strokeWidth="1.3" />
+            </svg>
+            <div>
+              <SectionLabel className="mb-1">What matters today</SectionLabel>
+              <p className="text-sm leading-relaxed text-[var(--ink-2)]">{brief}</p>
+            </div>
+          </div>
+        )}
         {messages.length === 0 && (
           <div className="flex flex-wrap gap-2 pt-2">
             {SUGGESTIONS.map((s) => (

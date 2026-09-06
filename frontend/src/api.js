@@ -197,3 +197,13 @@ export async function askAssistant(question, snapshot, history) {
     })
   );
 }
+
+export async function fetchBriefing(snapshot) {
+  return asJson(
+    await fetch(`${BASE}/api/assistant/briefing`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ snapshot }),
+    })
+  );
+}

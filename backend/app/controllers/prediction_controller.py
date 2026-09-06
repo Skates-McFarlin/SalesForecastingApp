@@ -24,8 +24,8 @@ from app.forecasting.base import (
 from huggingface_hub import hf_hub_download
 import os
 
-GGUF_REPO_ID = "Qwen/Qwen2.5-1.5B-Instruct-GGUF"
-GGUF_FILENAME = "qwen2.5-1.5b-instruct-q4_k_m.gguf"
+GGUF_REPO_ID = "Qwen/Qwen3-4B-GGUF"
+GGUF_FILENAME = "Qwen3-4B-Q4_K_M.gguf"
 
 LLAMA_SERVER_HOST = "127.0.0.1"
 
@@ -33,9 +33,9 @@ LLAMA_SERVER_HOST = "127.0.0.1"
 # of install-dir permissions) - same pattern as the SQLite DB path.
 _appdata = os.getenv("LOCALAPPDATA")
 MODEL_DIR = (
-    os.path.join(_appdata, "Insighta", "models", "qwen2_5_gguf")
+    os.path.join(_appdata, "Insighta", "models", "qwen3_4b_gguf")
     if _appdata
-    else os.path.join(os.path.dirname(__file__), "..", "models", "qwen2_5_gguf")
+    else os.path.join(os.path.dirname(__file__), "..", "models", "qwen3_4b_gguf")
 )
 MODEL_FILE = os.path.join(MODEL_DIR, GGUF_FILENAME)
 
@@ -226,13 +226,20 @@ def _load_model():
         server_exe = _llama_server_exe()
         llama_server_port = _free_port()
         creationflags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+        # Qwen3-4B is a bigger, slower model than the old 1.5B, so give it real
+        # compute: all CPU threads, a context roomy enough for the trend/inventory
+        # facts + narration, and only 2 parallel slots (this is a single-user
+        # assistant; more slots just waste KV-cache memory).
+        n_threads = str(max(1, os.cpu_count() or 4))
         llama_process = subprocess.Popen(
             [
                 server_exe,
                 "--model", MODEL_FILE,
                 "--host", LLAMA_SERVER_HOST,
                 "--port", str(llama_server_port),
-                "--parallel", "8",
+                "--parallel", "2",
+                "--threads", n_threads,
+                "--ctx-size", "8192",
             ],
             cwd=os.path.dirname(server_exe),
             stdout=subprocess.DEVNULL,
@@ -285,10 +292,14 @@ def _chat(messages, max_tokens, temperature=0.0, top_p=1.0):
     resp = requests.post(
         f"{_llama_base_url()}/v1/chat/completions",
         json={"messages": messages, "max_tokens": max_tokens, "temperature": temperature, "top_p": top_p},
-        timeout=120,
+        timeout=180,
     )
     resp.raise_for_status()
-    return resp.json()["choices"][0]["message"]["content"].strip()
+    content = resp.json()["choices"][0]["message"]["content"]
+    # Qwen3 is a hybrid reasoning model; even with thinking suppressed it can emit
+    # a <think>...</think> preamble. Strip it so only the answer surfaces.
+    content = re.sub(r"<think>.*?</think>", "", content, flags=re.DOTALL)
+    return content.strip()
 
 
 def _context_lines(sku=None, extra_context=None):
