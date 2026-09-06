@@ -226,20 +226,23 @@ def _load_model():
         server_exe = _llama_server_exe()
         llama_server_port = _free_port()
         creationflags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
-        # Qwen3-4B is a bigger, slower model than the old 1.5B, so give it real
-        # compute: all CPU threads, a context roomy enough for the trend/inventory
-        # facts + narration, and only 2 parallel slots (this is a single-user
-        # assistant; more slots just waste KV-cache memory).
-        n_threads = str(max(1, os.cpu_count() or 4))
+        # Qwen3-4B must SHARE a modest machine with the forecast engine (which
+        # loads torch/Chronos + LightGBM). Keep its footprint lean: one sequence
+        # slot and a 4k context (plenty for the facts + narration) hold the KV
+        # cache to a few hundred MB, and cap threads at ~half the logical cores so
+        # a forecast running at the same time isn't starved of CPU. (An earlier
+        # 8k/2-slot/all-threads config pinned ~6.7GB and every core, so forecasts
+        # on a 16GB box thrashed and never finished.)
+        n_threads = str(max(2, (os.cpu_count() or 4) // 2))
         llama_process = subprocess.Popen(
             [
                 server_exe,
                 "--model", MODEL_FILE,
                 "--host", LLAMA_SERVER_HOST,
                 "--port", str(llama_server_port),
-                "--parallel", "2",
+                "--parallel", "1",
                 "--threads", n_threads,
-                "--ctx-size", "8192",
+                "--ctx-size", "4096",
             ],
             cwd=os.path.dirname(server_exe),
             stdout=subprocess.DEVNULL,
