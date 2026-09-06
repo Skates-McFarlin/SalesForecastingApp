@@ -51,7 +51,8 @@ llama_server_port = None
 # kill its members when its last handle closes, so this global MUST stay
 # referenced or llama-server would be killed the moment it's garbage-collected.
 llama_job = None
-model_status = {"status": "starting", "ready": False, "error": None}
+model_status = {"status": "idle", "ready": False, "error": None}
+_model_load_lock = threading.Lock()
 
 
 def _bind_child_to_process_lifetime(process):
@@ -278,11 +279,28 @@ def _load_model():
         model_status["error"] = str(exc)
 
 
-# Bootstrap the LLM in the background unless explicitly skipped (tests /
-# forecast-only usage that don't need summaries). Skipping avoids downloading
-# and spawning llama-server.
-if os.getenv("INSIGHTA_SKIP_LLM") != "1":
-    threading.Thread(target=_load_model, daemon=True).start()
+# LAZY model load: the LLM is only needed for free-form assistant questions, so
+# we do NOT download/spawn it at startup. Keeping a 2GB+ model resident starved
+# the forecast engine on modest machines; loading it on first use means it isn't
+# there during forecasting or for users who never open the assistant, and the app
+# launches instantly instead of blocking on a ~1GB first-run download. The
+# briefing and structured facts are computed deterministically and need no model.
+def ensure_model():
+    """Start the model loading in the background if it isn't already ready/loading.
+    Idempotent and non-blocking; callers check `model_status['ready']`. Returns
+    True only when the model is ready to serve now."""
+    if os.getenv("INSIGHTA_SKIP_LLM") == "1":
+        return False
+    if model_status["ready"]:
+        return True
+    with _model_load_lock:
+        if model_status["ready"]:
+            return True
+        if model_status["status"] in ("idle", "error"):
+            model_status["status"] = "downloading_model" if not _model_already_present() else "loading_model"
+            model_status["error"] = None
+            threading.Thread(target=_load_model, daemon=True).start()
+    return False
 
 
 def _chat(messages, max_tokens, temperature=0.0, top_p=1.0):

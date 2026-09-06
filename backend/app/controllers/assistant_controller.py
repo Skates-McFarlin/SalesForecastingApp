@@ -237,8 +237,10 @@ Facts:
 
 def briefing(snapshot=None):
     """Proactive 'here's what matters today': the client's attention counts (if a
-    forecast has been run) plus the deterministic trend/trust selection, narrated
-    into a short lead the assistant opens with. Returns (text, items)."""
+    forecast has been run) plus the deterministic trend/trust selection. Rendered
+    DETERMINISTICALLY - no LLM - because the items are already fully computed, so
+    the Assistant opens instantly and needs no model resident. Returns (text,
+    items); the client renders the items as a list, with text as a fallback."""
     from app.analytics.briefing import catalog_briefing
 
     attention = (snapshot or {}).get("attention")
@@ -249,27 +251,6 @@ def briefing(snapshot=None):
     if not items:
         return ("Nothing urgent — your catalog looks steady. No sharp declines, quiet "
                 "drifts, or shaky forecasts stand out right now.", [])
-
-    facts = "\n".join(f"- {it['subject']}: {it['detail']}" for it in items)
-    prompt = f"""Write a short 'here's what matters today' briefing for a small seller,
-using ONLY these facts, most important first. Lead with the single most important
-one, group the rest naturally, and never introduce a number that isn't below. 2-4
-sentences, direct and useful.
-
-Facts:
-{facts}
-"""
-    messages = [
-        {"role": "system", "content": "You are Insighta, a sharp inventory analyst. Brief the "
-         "owner on what matters. Use only the figures provided; never invent numbers. /no_think"},
-        {"role": "user", "content": prompt},
-    ]
-    best = None
-    for _ in range(2):
-        text = _chat(messages, max_tokens=240, temperature=0.3, top_p=0.9)
-        unsupported = _unsupported_numbers(text, facts)
-        if not unsupported:
-            return text, items
-        if best is None or len(unsupported) < len(best[1]):
-            best = (text, items)
-    return best[0], items
+    text = "Here's what matters today: " + "; ".join(
+        f"{it['subject']} — {it['detail']}" for it in items) + "."
+    return text, items
