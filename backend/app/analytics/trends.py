@@ -12,6 +12,8 @@ ago), NOT vs the immediately preceding window. That matters: on seasonal demand,
 to the same calendar window a year earlier is seasonality-neutral, so a positive
 number is real trend, not the season turning.
 """
+import math
+
 import numpy as np
 import pandas as pd
 
@@ -24,6 +26,20 @@ MIN_BASE = 3.0          # min year-ago window units before a YoY ratio is truste
 TREND_R2 = 0.60         # rolling-annual-sum fit must explain this much variance
 TREND_MIN = 0.03        # ...and be at least +/-3%/yr to count as a real trend
 STREAK_GATE = 0.05      # a YoY step must exceed 5% of the series' level to count
+
+# Shift-vs-drift thresholds. A "gradual drift" and an "abrupt shift" are DIFFERENT
+# shapes and want different detectors: a monotonic trend (Mann-Kendall) vs a
+# discrete level jump (changepoint). Labelling them apart deterministically is the
+# point - a small narrator model guesses this distinction wrong, so we hand it the
+# answer instead of the raw numbers.
+MK_Z = 1.96             # Mann-Kendall |z| for a significant monotonic trend (p<0.05)
+# _best_split picks the MAX t over ~n candidate positions, so its null isn't a
+# single t: pure noise throws a spurious ~t=3 split routinely. Real steps clear
+# t>=15, so a high bar (that accounts for the search) keeps false shifts out
+# without missing genuine ones.
+STEP_T = 4.5            # two-sample t across the best split to call a real step
+STEP_REL = 0.15         # ...and the step must move the level at least 15%
+MIN_SEG = 3             # min periods on each side of a changepoint
 
 
 def _season(grain_label):
@@ -111,6 +127,147 @@ def _drift_sig(y, season):
     return abs(t) >= 2.5
 
 
+def _deseasonalize(y, season):
+    """Divide out MULTIPLICATIVE seasonality (each phase's level ratio) so the
+    trend/changepoint detectors see LEVEL, not the calendar turning. Multiplicative
+    (not additive) keeps the result NON-NEGATIVE - additive subtraction on a
+    near-zero-floor seasonal item (a holiday SKU) drives off-season months negative
+    and leaves a residual peak that reads as a phantom step. Indices are floored so
+    a near-zero phase can't explode the division."""
+    if len(y) < 2 * season or season < 2:
+        return y.astype(float)
+    overall = float(y.mean())
+    if overall <= 0:
+        return y.astype(float)
+    phase = np.arange(len(y)) % season
+    idx = np.array([max(y[phase == p].mean() / overall, 0.1) for p in range(season)])
+    return y / idx[phase]
+
+
+def _norm_cdf(z):
+    return 0.5 * (1.0 + math.erf(z / math.sqrt(2.0)))
+
+
+def _mann_kendall(d):
+    """Non-parametric monotonic-trend test (tie-corrected, normal approximation).
+    Returns (z, direction) where direction is +1 rising / -1 falling / 0 none.
+    Robust to outliers and makes no linearity assumption - it answers 'is the
+    series drifting one way, gradually?' which is the complement of a step."""
+    n = len(d)
+    if n < 8:
+        return 0.0, 0
+    s = 0
+    for i in range(n - 1):
+        s += int(np.sum(np.sign(d[i + 1:] - d[i])))
+    _, counts = np.unique(d, return_counts=True)
+    ties = float(np.sum(counts * (counts - 1) * (2 * counts + 5)))
+    var = (n * (n - 1) * (2 * n + 5) - ties) / 18.0
+    if var <= 0:
+        return 0.0, 0
+    if s > 0:
+        z = (s - 1) / math.sqrt(var)
+    elif s < 0:
+        z = (s + 1) / math.sqrt(var)
+    else:
+        z = 0.0
+    direction = int(np.sign(z)) if abs(z) >= MK_Z else 0
+    return round(float(z), 3), direction
+
+
+def _best_split(d):
+    """Best single mean-shift changepoint by minimizing within-segment SSE, via
+    prefix sums (O(n)). Returns (t, sse_step) where t is the newest segment's start
+    index, or (None, sse_total) when the series is too short to split."""
+    n = len(d)
+    tot = float(((d - d.mean()) ** 2).sum())
+    if n < 2 * MIN_SEG:
+        return None, tot
+    p1 = np.concatenate([[0.0], np.cumsum(d)])
+    p2 = np.concatenate([[0.0], np.cumsum(d * d)])
+
+    def sse(a, b):
+        cnt = b - a
+        s = p1[b] - p1[a]
+        return (p2[b] - p2[a]) - s * s / cnt
+
+    best_t, best = None, math.inf
+    for t in range(MIN_SEG, n - MIN_SEG + 1):
+        cur = sse(0, t) + sse(t, n)
+        if cur < best:
+            best, best_t = cur, t
+    return best_t, best
+
+
+def _changepoint(d):
+    """Detect a discrete level shift and score its confidence. Returns a dict
+    (periods_ago from the series end, from/to level, relative move, two-sample t)
+    when a real step is present, else None. A ramp also 'splits' well, so the
+    caller must still compare this against a linear fit before calling it abrupt.
+
+    The step must be big relative to the series' TYPICAL volume (mean), not just
+    the possibly-tiny left segment - and `rel_change` is reported against a
+    mean-floored denominator so a near-zero prior level can never produce an
+    impossible (< -100% or exploding) percentage."""
+    n = len(d)
+    t, sse_step = _best_split(d)
+    if t is None:
+        return None
+    left, right = d[:t], d[t:]
+    ml, mr = float(left.mean()), float(right.mean())
+    nl, nr = len(left), len(right)
+    mu = float(np.mean(d))
+    pooled_var = sse_step / max(n - 2, 1)
+    denom = math.sqrt(pooled_var * (1.0 / nl + 1.0 / nr)) if pooled_var > 0 else 0.0
+    tstat = abs(mr - ml) / denom if denom > 0 else (math.inf if mr != ml else 0.0)
+    # Magnitude gate is against typical volume; % is against a floored prior level.
+    if tstat < STEP_T or mu <= 0 or abs(mr - ml) < STEP_REL * mu:
+        return None
+    rel = (mr - ml) / max(abs(ml), 0.25 * mu)
+    return {"periods_ago": int(n - t), "from_level": round(ml, 2),
+            "to_level": round(mr, 2), "rel_change": round(float(rel), 4),
+            "t": round(float(tstat), 2) if math.isfinite(tstat) else 99.0,
+            "sse_step": float(sse_step)}
+
+
+def _pattern(y, season):
+    """Label the series' SHAPE: an abrupt level shift vs a gradual monotonic drift
+    vs steady. Deseasonalize first (else every season reads as a shift), then run
+    both detectors and let the better-fitting model win: a step is only 'abrupt' if
+    the two-mean fit beats a straight line - otherwise a genuine ramp that happens
+    to split gets mislabeled. This is the shift/drift call a small model can't make
+    reliably; we compute it so the narrator just reports it."""
+    y = np.asarray(y, dtype=float)
+    out = {"pattern": "steady", "shift": None, "mk_z": 0.0}
+    # Measure the ACTIVE series (trim leading pre-launch zeros): a launch is a
+    # launch, not an abrupt step, and leading zeros make the prior level ~0 and
+    # explode the %. A step can't be told apart from a season without a couple of
+    # clean cycles, so short-active series get no shift/trend claim - honest.
+    nz = np.nonzero(y > 0)[0]
+    if len(nz):
+        y = y[nz[0]:]
+    if len(y) < max(8, 2 * season):
+        return out
+    d = _deseasonalize(y, season)
+    n = len(d)
+    mk_z, mk_dir = _mann_kendall(d)
+    out["mk_z"] = mk_z
+    cp = _changepoint(d)
+    if cp is not None:
+        x = np.arange(n)
+        slope, intercept = np.polyfit(x, d, 1)
+        sse_line = float(((d - (slope * x + intercept)) ** 2).sum())
+        # A step must explain the series at least as well as a straight ramp.
+        if cp["sse_step"] <= sse_line:
+            out["shift"] = {k: v for k, v in cp.items() if k != "sse_step"}
+            out["pattern"] = "abrupt_rise" if cp["rel_change"] > 0 else "abrupt_drop"
+            return out
+    if mk_dir > 0:
+        out["pattern"] = "gradual_rise"
+    elif mk_dir < 0:
+        out["pattern"] = "gradual_decline"
+    return out
+
+
 def series_momentum(y, season):
     """Momentum record for one demand series (chronological), with significance
     flags so the caller can refuse to narrate noise."""
@@ -126,16 +283,26 @@ def series_momentum(y, season):
     g12_sig = g12 is not None and abs(g12) >= 2 * noise_g12
     streak = _yoy_streak(y, season)
     drift_sig = _drift_sig(y, season)
+    shape = _pattern(y, season)
+    # Cross-check the GRADUAL label against the independent R^2-gated rolling-sum
+    # trend: a real monotonic drift clears both detectors; a deseasonalization
+    # artifact clears only Mann-Kendall. (Abrupt shifts keep their changepoint
+    # evidence and aren't gated on trend_sig.)
+    if shape["pattern"] in ("gradual_rise", "gradual_decline") and not trend_sig:
+        shape["pattern"] = "steady"
     return {
         "trend_yr": trend_yr, "trend_sig": trend_sig,   # sustained direction + is-it-real
         "g3": g3, "g6": _yoy_growth(y, 6, season),
         "g12": g12, "g12_sig": bool(g12_sig),           # annual YoY + is-it-real
         "accel": accel,                                 # recent pace vs annual pace
         "streak": streak, "drift_sig": bool(drift_sig), # consecutive YoY periods + is-the-drift-real
+        "pattern": shape["pattern"],                    # abrupt_rise/drop | gradual_rise/decline | steady
+        "shift": shape["shift"],                        # dict when an abrupt step is present, else None
+        "mk_z": shape["mk_z"],                          # Mann-Kendall z (monotonic-trend evidence)
         "recent_units": round(float(y[-season:].sum()) if len(y) >= season else float(y.sum()), 1),
         "cv": round(cv, 3), "n_periods": int(len(y)),
-        # Worth a comment only if a real sustained trend OR a significant drift.
-        "signal": bool(trend_sig or drift_sig),
+        # Worth a comment only if a real sustained trend, a significant drift, or a step.
+        "signal": bool(trend_sig or drift_sig or shape["shift"] is not None),
     }
 
 
@@ -200,6 +367,23 @@ def quiet_movers(records, min_streak=3, band=(0.05, 0.30), min_units=5.0, limit=
         if r.get("drift_sig") and abs(r.get("streak", 0)) >= min_streak and lo <= abs(g12) < hi:
             out.append(r)
     out.sort(key=lambda r: (abs(r["streak"]), abs(r["g12"])), reverse=True)
+    return out[:limit]
+
+
+def recent_shifts(records, within=None, min_units=5.0, limit=10):
+    """SKUs/categories that took an abrupt level STEP recently (a discrete jump the
+    gradual-trend metrics blur over). `within` bounds how many periods back the step
+    may be (default: any); results are the freshest, largest steps first."""
+    out = []
+    for r in records:
+        sh = r.get("shift")
+        if sh is None or r.get("recent_units", 0) < min_units:
+            continue
+        if within is not None and sh.get("periods_ago", 10 ** 9) > within:
+            continue
+        out.append(r)
+    out.sort(key=lambda r: (-r["shift"]["periods_ago"], abs(r["shift"]["rel_change"])),
+             reverse=True)
     return out[:limit]
 
 

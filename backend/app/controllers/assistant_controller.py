@@ -11,8 +11,15 @@ and the LLM only PHRASES an answer grounded in those facts. Any number it writes
 that isn't traceable to the snapshot is caught and it's asked to try again.
 """
 from app.controllers.prediction_controller import _chat, _unsupported_numbers
-from app.analytics.trends import catalog_trends, top_movers, quiet_movers
+from app.analytics.trends import catalog_trends, top_movers, quiet_movers, recent_shifts
 from app.analytics.trust import catalog_trust, least_trusted
+
+
+_PATTERN_WORDS = {
+    "abrupt_rise": "an abrupt step UP", "abrupt_drop": "an abrupt step DOWN",
+    "gradual_rise": "a gradual sustained rise", "gradual_decline": "a gradual sustained decline",
+    "steady": "steady (no trend or step)",
+}
 
 
 def _pct(x):
@@ -70,15 +77,32 @@ def _trend_facts(question):
             f"{s['name']} {'up' if s['streak'] > 0 else 'down'} {_periods(s['streak'])}, "
             f"{_pct(s['g12'])} YoY" for s in quiet))
 
+    # Abrupt LEVEL SHIFTS in the last half-year: a discrete step is a different
+    # story than a slow drift, and the labels are computed (changepoint vs
+    # Mann-Kendall) so the model never has to guess shift-vs-drift.
+    within = max(3, t.get("season", 12) // 2)
+    shifts = recent_shifts(skus, within=within, limit=4)
+    if shifts:
+        lines.append("  Abrupt shifts (a step change, not a slow drift): " + "; ".join(
+            f"{s['name']} stepped {'down' if s['shift']['rel_change'] < 0 else 'up'} "
+            f"{_pct(s['shift']['rel_change'])} ~{_periods(s['shift']['periods_ago'])} ago"
+            for s in shifts))
+
     seen = set()
     named = [s for s in skus if _mentions(s["name"], question)
              and not (s["name"] in seen or seen.add(s["name"]))][:3]
     for s in named:
-        lines.append(
-            f"  Momentum for {s['name']}: sustained {_pct(s['trend_yr'])}/{unit}, "
-            f"{_pct(s['g12'])} YoY (last 3 periods {_pct(s['g3'])} YoY), "
+        line = (
+            f"  Momentum for {s['name']}: {_PATTERN_WORDS.get(s.get('pattern'), s.get('pattern'))}; "
+            f"sustained {_pct(s['trend_yr'])}/{unit}, {_pct(s['g12'])} YoY "
+            f"(last 3 periods {_pct(s['g3'])} YoY), "
             f"{'up' if s['streak'] > 0 else 'down' if s['streak'] < 0 else 'flat'} "
             f"{_periods(s['streak'])} running.")
+        sh = s.get("shift")
+        if sh:
+            line += (f" Stepped {'down' if sh['rel_change'] < 0 else 'up'} {_pct(sh['rel_change'])} "
+                     f"about {_periods(sh['periods_ago'])} ago (level {sh['from_level']:.0f} -> {sh['to_level']:.0f}).")
+        lines.append(line)
     return lines
 
 

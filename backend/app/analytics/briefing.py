@@ -22,7 +22,7 @@ def build_briefing(trends, trust, attention=None, limit=5):
     drift (the non-obvious) / big SKU decline > 2 growth needing supply > 1
     low-trust caution on an important SKU.
     """
-    from app.analytics.trends import top_movers, quiet_movers
+    from app.analytics.trends import top_movers, quiet_movers, recent_shifts
     from app.analytics.trust import least_trusted
 
     cats, skus = trends.get("categories", []), trends.get("skus", [])
@@ -42,6 +42,16 @@ def build_briefing(trends, trust, attention=None, limit=5):
     for c in top_movers(cats, "down", "trend_yr", limit=2):
         items.append({"priority": 4, "kind": "category_down", "subject": c["category"],
                       "detail": f"sustained {_pct(c['trend_yr'])}/yr decline across the category"})
+
+    # 4/3 - an abrupt LEVEL SHIFT in the last half-year: a discrete "something
+    # happened here" event, a different (often more actionable) story than a slow
+    # drift. Freshest first; recent drops outrank recent rises.
+    within = max(3, trends.get("season", 12) // 2)
+    for s in recent_shifts(skus, within=within, limit=3):
+        sh = s["shift"]; ago = sh["periods_ago"]; down = sh["rel_change"] < 0
+        items.append({"priority": 4 if down else 3, "kind": "shift", "subject": s["name"],
+                      "detail": f"stepped {'down' if down else 'up'} {_pct(sh['rel_change'])} about "
+                                f"{ago} period{'' if ago == 1 else 's'} ago - an abrupt change, not a slow drift"})
 
     # 3 - quiet drifts (below the usual alert) + the single biggest SKU decline
     for s in quiet_movers(skus, limit=2):
@@ -65,10 +75,12 @@ def build_briefing(trends, trust, attention=None, limit=5):
             items.append({"priority": 1, "kind": "low_trust", "subject": r["name"],
                           "detail": f"a high-volume product with a shaky forecast ({r['score']}/100: {r['reasons'][0]})"})
 
-    # de-dupe by (kind, subject), keep highest priority, then rank
+    # de-dupe by subject (one line per product/category - don't bill the same
+    # thing twice, e.g. a stepped-down SKU that's also a slow decliner), keeping
+    # its highest-priority framing, then rank.
     seen = {}
     for it in items:
-        k = (it["kind"], it["subject"])
+        k = it["subject"]
         if k not in seen or it["priority"] > seen[k]["priority"]:
             seen[k] = it
     ranked = sorted(seen.values(), key=lambda it: -it["priority"])
