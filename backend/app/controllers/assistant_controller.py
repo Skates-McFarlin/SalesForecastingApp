@@ -31,113 +31,115 @@ def _periods(n):
     return f"{n} period{'' if n == 1 else 's'}"
 
 
-def _mentions(name, question):
-    """True if the question references this product by a meaningful name word."""
-    q = question.lower()
-    return any(len(w) >= 4 and w in q for w in str(name).lower().replace("/", " ").split())
+def _find(records, name, key):
+    return next((r for r in records if r.get(key) == name), None)
 
 
-def _trend_facts(question):
-    """Trend & momentum intelligence (computed server-side over full sales
-    history). Always offers the catalog-wide movers; if the question names a
-    product, adds that SKU's momentum. These are real, deterministic numbers -
-    the model narrates them, never invents them."""
-    try:
-        t = catalog_trends()
-    except Exception:  # noqa: BLE001 - trends are best-effort context
-        return []
+def _momentum_line(s, label="Momentum", unit="year"):
+    line = (f"{label} for {s['name']}: {_PATTERN_WORDS.get(s.get('pattern'), s.get('pattern'))}; "
+            f"sustained {_pct(s['trend_yr'])}/{unit}, {_pct(s['g12'])} YoY "
+            f"(last 3 periods {_pct(s['g3'])} YoY), "
+            f"{'up' if s['streak'] > 0 else 'down' if s['streak'] < 0 else 'flat'} "
+            f"{_periods(s['streak'])} running.")
+    sh = s.get("shift")
+    if sh:
+        line += (f" Stepped {'down' if sh['rel_change'] < 0 else 'up'} {_pct(sh['rel_change'])} "
+                 f"about {_periods(sh['periods_ago'])} ago (level {sh['from_level']:.0f} -> {sh['to_level']:.0f}).")
+    return line
+
+
+def _movers_lines(t):
+    """Catalog-wide growers, decliners, and quiet drifts (no specific product)."""
     skus, cats = t.get("skus", []), t.get("categories", [])
     if not skus:
         return []
-    unit = "year" if t.get("grain") == "monthly" else "year"
     lines = ["Trend & momentum (sustained trend is per-year, seasonality-adjusted; "
              "YoY is the last 12 periods vs the year before):"]
-
     grow_c = top_movers(cats, "up", "trend_yr", limit=3)
     fall_c = top_movers(cats, "down", "trend_yr", limit=3)
     if grow_c:
         lines.append("  Growing categories: " + ", ".join(
-            f"{c['category']} {_pct(c['trend_yr'])}/{unit}" for c in grow_c))
+            f"{c['category']} {_pct(c['trend_yr'])}/year" for c in grow_c))
     if fall_c:
         lines.append("  Declining categories: " + ", ".join(
-            f"{c['category']} {_pct(c['trend_yr'])}/{unit}" for c in fall_c))
-
+            f"{c['category']} {_pct(c['trend_yr'])}/year" for c in fall_c))
     grow_s = top_movers(skus, "up", "trend_yr", limit=5)
     fall_s = top_movers(skus, "down", "trend_yr", limit=5)
     if grow_s:
         lines.append("  Fastest-growing products: " + "; ".join(
-            f"{s['name']} {_pct(s['trend_yr'])}/{unit}" for s in grow_s))
+            f"{s['name']} {_pct(s['trend_yr'])}/year" for s in grow_s))
     if fall_s:
         lines.append("  Fastest-declining products: " + "; ".join(
-            f"{s['name']} {_pct(s['trend_yr'])}/{unit}" for s in fall_s))
-
+            f"{s['name']} {_pct(s['trend_yr'])}/year" for s in fall_s))
     quiet = quiet_movers(skus, min_streak=3, limit=5)
     if quiet:
         lines.append("  Quiet drifts (sustained, below a +/-30% YoY alert): " + "; ".join(
             f"{s['name']} {'up' if s['streak'] > 0 else 'down'} {_periods(s['streak'])}, "
             f"{_pct(s['g12'])} YoY" for s in quiet))
-
-    # Abrupt LEVEL SHIFTS in the last half-year: a discrete step is a different
-    # story than a slow drift, and the labels are computed (changepoint vs
-    # Mann-Kendall) so the model never has to guess shift-vs-drift.
-    within = max(3, t.get("season", 12) // 2)
-    shifts = recent_shifts(skus, within=within, limit=4)
-    if shifts:
-        lines.append("  Abrupt shifts (a step change, not a slow drift): " + "; ".join(
-            f"{s['name']} stepped {'down' if s['shift']['rel_change'] < 0 else 'up'} "
-            f"{_pct(s['shift']['rel_change'])} ~{_periods(s['shift']['periods_ago'])} ago"
-            for s in shifts))
-
-    seen = set()
-    named = [s for s in skus if _mentions(s["name"], question)
-             and not (s["name"] in seen or seen.add(s["name"]))][:3]
-    for s in named:
-        line = (
-            f"  Momentum for {s['name']}: {_PATTERN_WORDS.get(s.get('pattern'), s.get('pattern'))}; "
-            f"sustained {_pct(s['trend_yr'])}/{unit}, {_pct(s['g12'])} YoY "
-            f"(last 3 periods {_pct(s['g3'])} YoY), "
-            f"{'up' if s['streak'] > 0 else 'down' if s['streak'] < 0 else 'flat'} "
-            f"{_periods(s['streak'])} running.")
-        sh = s.get("shift")
-        if sh:
-            line += (f" Stepped {'down' if sh['rel_change'] < 0 else 'up'} {_pct(sh['rel_change'])} "
-                     f"about {_periods(sh['periods_ago'])} ago (level {sh['from_level']:.0f} -> {sh['to_level']:.0f}).")
-        lines.append(line)
     return lines
 
 
-def _trust_facts(question):
-    """Forecast-trust intelligence: how much to rely on each SKU's forecast, from
-    history depth + demand regularity. Lets the assistant be honest about
-    confidence (and answer 'which forecasts shouldn't I trust?')."""
-    try:
-        t = catalog_trust()
-    except Exception:  # noqa: BLE001
-        return []
+def _shift_lines(t):
+    """Abrupt LEVEL SHIFTS in the last half-year - a discrete step is a different
+    story than a slow drift, and the label (changepoint vs Mann-Kendall) is
+    computed, so the model never has to guess shift-vs-drift."""
     skus = t.get("skus", [])
-    if not skus:
+    within = max(3, t.get("season", 12) // 2)
+    shifts = recent_shifts(skus, within=within, limit=6)
+    if not shifts:
+        return ["Abrupt shifts: none in the last half-year - recent demand has moved "
+                "gradually (or held steady), not in discrete steps."]
+    return ["Abrupt shifts (a discrete step change, not a slow drift):"] + [
+        f"  {s['name']} stepped {'down' if s['shift']['rel_change'] < 0 else 'up'} "
+        f"{_pct(s['shift']['rel_change'])} about {_periods(s['shift']['periods_ago'])} ago "
+        f"(level {s['shift']['from_level']:.0f} -> {s['shift']['to_level']:.0f})" for s in shifts]
+
+
+def _named_momentum_lines(t, entities):
+    """Per-named-product (or category) momentum + shape + any step."""
+    skus, cats = t.get("skus", []), t.get("categories", [])
+    lines = []
+    for name in entities:
+        s = _find(skus, name, "name")
+        if s:
+            lines.append(_momentum_line(s))
+            continue
+        c = _find(cats, name, "category")
+        if c:
+            lines.append(_momentum_line({**c, "name": c["category"]}, label="Category momentum"))
+    return lines
+
+
+def _trust_catalog_lines(tu):
+    skus = tu.get("skus", [])
+    lt = least_trusted(skus, max_level="low", limit=5) if skus else []
+    if not lt:
         return []
-    lines = ["Forecast trust (0-100: how reliable each SKU's forecast is, from history "
-             "depth + demand regularity; higher = more dependable):"]
-    lt = least_trusted(skus, max_level="low", limit=5)
-    if lt:
-        lines.append("  Least trustworthy (treat with caution): " + "; ".join(
-            f"{r['name']} ({r['score']}/100 - {r['reasons'][0]})" for r in lt))
-    seen = set()
-    named = [s for s in skus if _mentions(s["name"], question)
-             and not (s["name"] in seen or seen.add(s["name"]))][:3]
-    for s in named:
-        lines.append(f"  Trust for {s['name']}: {s['level']} ({s['score']}/100) — "
-                     f"{', '.join(s['reasons'])}.")
-    return lines if len(lines) > 1 else []
+    return ["Forecast trust (0-100: history depth + demand regularity; higher = more dependable):",
+            "  Least trustworthy (treat with caution): " + "; ".join(
+                f"{r['name']} ({r['score']}/100 - {r['reasons'][0]})" for r in lt)]
 
 
-def _facts_from_snapshot(snap):
+def _named_trust_lines(tu, entities):
+    skus = tu.get("skus", [])
+    lines = []
+    for name in entities:
+        s = _find(skus, name, "name")
+        if s:
+            lines.append(f"Trust for {s['name']}: {s['level']} ({s['score']}/100) - "
+                         f"{', '.join(s['reasons'])}.")
+    return lines
+
+
+def _facts_from_snapshot(snap, sections=None):
     """Render the frontend's computed snapshot as labeled fact lines - the only
-    numbers the model is allowed to use."""
+    numbers the model is allowed to use. `sections` (a set) selects which blocks
+    to include; None = all."""
+    def want(name):
+        return sections is None or name in sections
     lines = []
     b = snap.get("business") or {}
-    if b:
+    if want("business") and b:
         lines.append(
             f"Business: {b.get('products')} products, sales {b.get('span')}, "
             f"forecasting {b.get('grain')}."
@@ -154,7 +156,7 @@ def _facts_from_snapshot(snap):
             lines.append(f"  - {t}")
 
     p = snap.get("plan") or {}
-    if p:
+    if want("plan") and p:
         lines.append(
             f"Plan: forecast demand {p.get('forecast_demand')} units over the horizon; "
             f"suggested order now {p.get('suggested_order')} units at {p.get('service_level')} service; "
@@ -164,7 +166,7 @@ def _facts_from_snapshot(snap):
         )
 
     tr = snap.get("track_record") or {}
-    if tr:
+    if want("track_record") and tr:
         parts = []
         if tr.get("typical_miss") is not None:
             parts.append(f"typical miss {tr.get('typical_miss')}")
@@ -178,7 +180,7 @@ def _facts_from_snapshot(snap):
             lines.append("Track record: " + "; ".join(parts) + ".")
 
     bs = snap.get("budget_scenario")
-    if bs:
+    if want("budget_scenario") and bs:
         lines.append(
             f"Budget scenario: with ${bs.get('budget')}, the app would spend ${bs.get('allocated')} "
             f"covering {bs.get('coverage')} of a full restock at {bs.get('expected_service')} expected "
@@ -186,7 +188,7 @@ def _facts_from_snapshot(snap):
             f"{bs.get('skipped')} skipped)."
         )
 
-    for pr in (snap.get("products") or [])[:4]:
+    for pr in ((snap.get("products") or [])[:4] if want("products") else []):
         seg = [f"{pr.get('name')}" + (f" ({pr.get('sku')})" if pr.get('sku') else "")]
         if pr.get("category"):
             seg.append(f"category {pr['category']}")
@@ -209,18 +211,94 @@ def _facts_from_snapshot(snap):
     return "\n".join(lines)
 
 
+CAPABILITIES = (
+    "I'm your inventory analyst, so I can only answer from your own sales, forecast, "
+    "and stock data. Try asking: what needs my attention, what's growing or declining, "
+    "did anything change suddenly, which forecasts to trust, what to reorder (or on a "
+    "set budget), how a specific product is doing, or how accurate I've been."
+)
+
+
+def _snap_lines(snap, sections):
+    txt = _facts_from_snapshot(snap, sections)
+    return [ln for ln in txt.split("\n") if ln.strip()]
+
+
+def _assemble_facts(group, entities, snapshot, trends, trust):
+    """Build ONLY the facts the routed intent needs. Focused facts beat a dump: a
+    1.7B narrator answers a short, relevant fact set far better than it finds the
+    one line that matters in everything we know."""
+    S = snapshot or {}
+    L = []
+    if group == "attention":
+        L += _snap_lines(S, {"business", "attention"})
+    elif group == "plan":
+        L += _snap_lines(S, {"business", "plan", "budget_scenario", "products"})
+    elif group == "accuracy":
+        L += _snap_lines(S, {"business", "track_record"})
+    elif group == "forecast":
+        L += _snap_lines(S, {"business", "products"})
+        L += _named_momentum_lines(trends, entities)
+    elif group == "trend":
+        L += _named_momentum_lines(trends, entities) if entities else _movers_lines(trends)
+    elif group == "shift":
+        L += _shift_lines(trends)
+        L += _named_momentum_lines(trends, entities)
+    elif group == "trust":
+        if not entities:
+            L += _trust_catalog_lines(trust)
+        L += _named_trust_lines(trust, entities)
+    elif group == "product":
+        L += _snap_lines(S, {"business", "products"})
+        L += _named_momentum_lines(trends, entities)
+        L += _named_trust_lines(trust, entities)
+    elif group == "overview":
+        L += _snap_lines(S, {"business", "attention", "plan"})
+        try:
+            from app.analytics.briefing import build_briefing
+            items = build_briefing(trends, trust, attention=S.get("attention"), limit=4)
+        except Exception:  # noqa: BLE001
+            items = []
+        if items:
+            L.append("Today's priorities:")
+            L += [f"  - {it['subject']}: {it['detail']}" for it in items]
+    return [ln for ln in L if ln and ln.strip()]
+
+
 def answer(question, snapshot, history=None):
-    """Answer a question grounded ONLY in the snapshot's facts. Returns
-    (answer_text, unverified) where unverified flags numbers not traceable to the
-    facts (the caller can show a caveat)."""
-    snapshot_facts = _facts_from_snapshot(snapshot or {})
-    trend_lines = _trend_facts(question)
-    trust_lines = _trust_facts(question)
-    facts = "\n".join(
-        ([snapshot_facts] if snapshot_facts.strip() else []) + trend_lines + trust_lines)
+    """Answer a question grounded ONLY in real computed facts. A deterministic
+    router (app.analytics.intent) decides WHAT the question is about; we then
+    assemble just the facts that intent needs and the model phrases them. Returns
+    (answer_text, unverified); unverified flags numbers not traceable to the facts."""
+    from app.analytics.intent import classify
+
+    S = snapshot or {}
+    try:
+        trends = catalog_trends()
+    except Exception:  # noqa: BLE001
+        trends = {"skus": [], "categories": [], "season": 12}
+    names = ([s["name"] for s in trends.get("skus", [])]
+             + [c["category"] for c in trends.get("categories", [])])
+
+    route = classify(question, names)
+    group, entities = route["group"], route["entities"]
+
+    # Visible failure: an off-topic ask gets a straight capabilities reply, not a
+    # confident hallucination. No model call.
+    if group == "unknown":
+        return CAPABILITIES, False
+
+    trust = {"skus": []}
+    if group in ("trust", "product", "overview"):
+        try:
+            trust = catalog_trust()
+        except Exception:  # noqa: BLE001
+            trust = {"skus": []}
+
+    facts = "\n".join(_assemble_facts(group, entities, S, trends, trust))
     if not facts.strip():
         return (
-            "I don't have any sales data to look at yet — import a catalog and run a "
+            "I don't have the data to answer that yet — import a catalog and run a "
             "forecast, then ask me again.",
             False,
         )
