@@ -384,13 +384,26 @@ def classify_products_batch(items, max_workers=8):
 
     `items`: list of dicts with keys "key" (unique grouping id to return
     results under), "product_name", and optionally "sku"/"extra_context".
+
+    OPPORTUNISTIC: the model is lazy-loaded (not resident during a forecast, or
+    for users who never chat), so this tags products only when the model happens
+    to be serving already and otherwise returns nothing - the caller falls back to
+    "unknown" tags. The core forecast is fully deterministic and must NEVER depend
+    on the model being up (a forecast that 500s because the LLM isn't loaded is the
+    tail wagging the dog); it also never blocks a forecast to load ~2GB of model.
     """
+    if os.getenv("INSIGHTA_SKIP_LLM") == "1" or not model_status["ready"]:
+        return {}
+
     def classify_one(item):
-        messages = _classification_messages(
-            item["product_name"], item.get("sku"), item.get("extra_context")
-        )
-        raw = _chat(messages, max_tokens=64, temperature=0.0)
-        return item["key"], _extract_tags(raw)
+        try:
+            messages = _classification_messages(
+                item["product_name"], item.get("sku"), item.get("extra_context")
+            )
+            raw = _chat(messages, max_tokens=64, temperature=0.0)
+            return item["key"], _extract_tags(raw)
+        except Exception:  # noqa: BLE001 - enrichment is best-effort, never fatal
+            return item["key"], {"seasonality": "unknown", "category": "unknown"}
 
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         return dict(executor.map(classify_one, items))
