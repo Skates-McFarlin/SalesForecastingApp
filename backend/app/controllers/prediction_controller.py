@@ -17,7 +17,7 @@ import numpy as np
 from app.models.prediction import Prediction
 from app.models.file import File
 from app.extensions import db
-from app.forecasting import selector, elasticity as elasticity_mod
+from app.forecasting import selector, elasticity as elasticity_mod, censoring
 from app.forecasting.base import (
     aggregate_interval, period_actuals, MONTHLY, Forecast,
 )
@@ -918,6 +918,14 @@ def _forecast_core(json_data, extra_context_by_group, duration,
         )
         own_months_by_group[group_key] = len(df[df[group_col] == group_key])
 
+    # Stockout de-censoring: the forecast (and the seasonal shapes and validation
+    # folds it derives) must train on DEMAND, not censored sales - a steady seller
+    # that stocked out reads as a demand dip and biases the forecast, and the
+    # reorder point, low. Only steady sellers with a recovered interior dip are
+    # adjusted (see forecasting/censoring.py); the reported sales figures below stay
+    # as the real sales, and the adjustment is surfaced per SKU so it's honest.
+    df_fc, censor_info = censoring.decensor_frame(df, group_col, grain)
+
     seasonal_index_by_group = {}
     method_by_group = {}
     if grain is MONTHLY:
@@ -925,7 +933,7 @@ def _forecast_core(json_data, extra_context_by_group, duration,
         all_indices = []
         for group_key in products:
             if own_months_by_group[group_key] >= MIN_POOL_MONTHS:
-                idx = _monthly_seasonal_index(df[df[group_col] == group_key])
+                idx = _monthly_seasonal_index(df_fc[df_fc[group_col] == group_key])
                 if idx:
                     per_category_indices[category_by_group[group_key]].append(idx)
                     all_indices.append(idx)
@@ -958,7 +966,7 @@ def _forecast_core(json_data, extra_context_by_group, duration,
     # this whole phase is a handful of vectorized calls, not a per-SKU fit
     # loop (see app/forecasting/selector.py).
     forecasts = selector.run_forecast(
-        df, group_col, list(products), forecast_start_date, forecast_periods,
+        df_fc, group_col, list(products), forecast_start_date, forecast_periods,
         category_by_group, own_months_by_group, seasonal_index_by_group, grain,
     )
     # Label/score the reported window (the whole horizon unless narrowed).
@@ -1100,6 +1108,10 @@ def _forecast_core(json_data, extra_context_by_group, duration,
                 # Forecast total over the window - stored in the ledger as the
                 # learning signal for the self-grading track record (observed bias).
                 "ForecastRaw": round(raw_window_total),
+                # Stockout de-censoring (this SKU's sales history had likely
+                # out-of-stock periods reconstructed to demand before forecasting).
+                "StockoutAdjusted": group_key in censor_info,
+                "StockoutPeriods": censor_info.get(group_key, {}).get("periods", []),
                 **((inventory_by_key or {}).get(group_key, {})),
             }
         )

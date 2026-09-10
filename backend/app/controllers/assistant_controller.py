@@ -206,6 +206,11 @@ def _facts_from_snapshot(snap, sections=None):
             seg.append("flagged reorder-now")
         if pr.get("lead_time") is not None:
             seg.append(f"lead time {pr['lead_time']} days")
+        sp = pr.get("stockout_periods") or []
+        if sp:
+            seg.append(f"forecast adjusted for {len(sp)} likely stockout period"
+                       f"{'' if len(sp) == 1 else 's'} in its sales history "
+                       f"(demand reconstructed so the forecast isn't biased low)")
         lines.append("Product — " + ", ".join(seg) + ".")
 
     return "\n".join(lines)

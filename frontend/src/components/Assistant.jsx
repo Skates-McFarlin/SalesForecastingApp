@@ -88,6 +88,9 @@ function assembleSnapshot(question, { rows, settings, service, catalog, learning
       suggested_order: d.order,
       reorder_now: d.hasInventory && d.reorderNow,
       lead_time: d.leadTimeDays,
+      // Stockout de-censoring: the forecast reconstructed likely-out-of-stock
+      // periods to demand, so the assistant can explain a lifted forecast.
+      stockout_periods: Array.isArray(r.StockoutPeriods) ? r.StockoutPeriods : [],
     };
   });
 
