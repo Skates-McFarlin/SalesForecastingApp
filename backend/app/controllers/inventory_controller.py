@@ -60,6 +60,7 @@ def inventory_state(product):
         "OnHand": product.on_hand,
         "LeadTimeDays": product.lead_time_days,  # the typed/planned lead (fallback)
         "UnitCost": product.unit_cost,
+        "Price": product.price,
         "MOQ": product.moq,
         "CasePack": product.case_pack,
         "InventoryUpdatedAt": (
@@ -90,7 +91,7 @@ def inventory_by_key():
 
 
 # on_order is no longer edited by hand - it's derived from open purchase orders.
-_INV_FIELDS = ("on_hand", "lead_time_days", "unit_cost", "moq", "case_pack")
+_INV_FIELDS = ("on_hand", "lead_time_days", "unit_cost", "price", "moq", "case_pack")
 
 
 def update_product_inventory(key, data):

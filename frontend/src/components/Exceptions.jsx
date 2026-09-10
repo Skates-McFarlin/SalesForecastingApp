@@ -14,7 +14,7 @@ const SEV = {
 // seller go hunting. Derived live from the current forecast + inventory, so
 // ordering a stockout item drops it off the list.
 export default function Exceptions({ rows, settings, service, onInventoryResult, onOpenForecast }) {
-  const { items, byType, missingStock, total } = useMemo(
+  const { items, byType, missingStock, total, totalImpact } = useMemo(
     () => deriveExceptions(rows, settings, service.z),
     [rows, settings, service]
   );
@@ -32,7 +32,10 @@ export default function Exceptions({ rows, settings, service, onInventoryResult,
         <SectionLabel className="mb-1">What needs you</SectionLabel>
         <p className="max-w-2xl text-sm leading-relaxed text-[var(--ink-2)]">
           {total > 0
-            ? `${formatNumber(total)} of your ${formatNumber(rows.length)} products need attention right now — ordered by urgency.`
+            ? `${formatNumber(total)} of your ${formatNumber(rows.length)} products need attention right now — ${
+                totalImpact != null
+                  ? `about $${formatNumber(totalImpact)} of margin and capital at stake, ranked by dollars at risk`
+                  : "ranked by urgency"}.`
             : "Everything's in good shape — nothing needs action right now."}
         </p>
       </div>

@@ -23,6 +23,21 @@ function pctChange(row) {
   return v === "N/A" || v == null ? null : Number(v);
 }
 
+// Per-unit economics: margin when both price and cost are known, plus the raw
+// cost. Business-impact ranks on DOLLARS, not units - a stockout on a $2 item and
+// a $200 item are not the same problem. Falls back gracefully: margin -> cost ->
+// (nothing, so those items rank by urgency at the bottom).
+function perUnit(row) {
+  const price = Number(row.Price), cost = Number(row.UnitCost);
+  const hasP = row.Price != null && !Number.isNaN(price) && price > 0;
+  const hasC = row.UnitCost != null && !Number.isNaN(cost) && cost > 0;
+  const margin = hasP && hasC && price > cost ? price - cost : null;
+  return { margin, cost: hasC ? cost : null };
+}
+function money(n) {
+  return n == null ? null : `$${Math.round(n).toLocaleString()}`;
+}
+
 export function deriveExceptions(rows, settings, z) {
   const items = [];
   let missingStock = 0;
@@ -34,6 +49,9 @@ export function deriveExceptions(rows, settings, z) {
     const key = row.Sku || row.ProductName;
     if (!d.hasInventory) missingStock += 1;
 
+    const pu = perUnit(row);
+    const lostVal = pu.margin != null ? pu.margin : pu.cost; // $/unit of not supplying
+    const capVal = pu.cost != null ? pu.cost : pu.margin;    // $/unit of capital exposure
     const candidates = [];
 
     // A purchase order whose expected arrival has passed.
@@ -48,6 +66,7 @@ export function deriveExceptions(rows, settings, z) {
         detail: `${fmt(qty)} units expected ${overdue[0].expected_on}, not yet received`,
         action: "Follow up with your supplier",
         magnitude: qty,
+        impactUsd: capVal != null ? qty * capVal : null,   // capital in limbo
       });
     }
 
@@ -65,6 +84,8 @@ export function deriveExceptions(rows, settings, z) {
         action: `Order ${fmt(d.order)}`,
         order: d.order,
         magnitude: d.order,
+        // Margin you protect by ordering (or the capital it takes, if no price).
+        impactUsd: lostVal != null ? d.order * lostVal : null,
       });
     }
 
@@ -77,6 +98,8 @@ export function deriveExceptions(rows, settings, z) {
         detail: `forecast ${pc.toFixed(0)}% vs last year`,
         action: "Ease off ordering; consider clearing stock",
         magnitude: num(row.Forecast),
+        // Revenue/cost exposure of the declining line over the horizon.
+        impactUsd: lostVal != null ? num(row.Forecast) * lostVal : null,
       });
     } else if (pc != null && pc >= SURGE) {
       candidates.push({
@@ -85,12 +108,15 @@ export function deriveExceptions(rows, settings, z) {
         detail: `forecast +${pc.toFixed(0)}% vs last year`,
         action: "Make sure supply can keep up",
         magnitude: num(row.Forecast),
+        // Upside at risk if you can't supply the extra demand.
+        impactUsd: lostVal != null
+          ? num(row.Forecast) * Math.min(pc / 100, 1) * lostVal : null,
       });
     }
 
     // Sitting on far more than the reorder cycle needs - cash tied up.
     if (d.hasInventory && d.coverDays != null && d.coverDays >= OVERSTOCK_DAYS && d.order === 0) {
-      const cash = row.UnitCost ? d.position * num(row.UnitCost) : null;
+      const cash = capVal != null ? d.position * capVal : null;
       candidates.push({
         type: "overstock",
         severity: d.coverDays >= OVERSTOCK_DAYS * 2 ? "medium" : "low",
@@ -99,17 +125,35 @@ export function deriveExceptions(rows, settings, z) {
         detail: `${Math.round(d.coverDays)}d of cover${cash ? ` · ~$${fmt(cash)} tied up` : ""}`,
         action: "Pause ordering; consider a promotion",
         magnitude: cash || d.position,
+        impactUsd: cash,   // capital tied up in excess stock
       });
     }
 
     if (!candidates.length) continue;
     candidates.sort((a, b) => RANK[b.severity] - RANK[a.severity] || b.tprio - a.tprio);
-    items.push({ key, name: row.ProductName, sku: row.Sku, category: row.Category, ...candidates[0] });
+    const chosen = candidates[0];
+    // Surface the dollar figure inline when we can price it.
+    if (chosen.impactUsd != null && chosen.type !== "overstock") {
+      chosen.detail += ` · ~${money(chosen.impactUsd)} at risk`;
+    }
+    items.push({ key, name: row.ProductName, sku: row.Sku, category: row.Category, ...chosen });
   }
 
-  items.sort((a, b) => RANK[b.severity] - RANK[a.severity] || (b.magnitude || 0) - (a.magnitude || 0));
+  // Rank by DOLLARS at risk first (the whole point of business-impact), with
+  // urgency as the tiebreaker so a critical run-out still floats within a dollar
+  // band. Items we can't price (no cost/price) fall to the bottom, ranked as before.
+  items.sort((a, b) =>
+    (b.impactUsd != null) - (a.impactUsd != null) ||
+    (b.impactUsd || 0) - (a.impactUsd || 0) ||
+    RANK[b.severity] - RANK[a.severity] ||
+    (b.magnitude || 0) - (a.magnitude || 0));
 
   const byType = {};
-  for (const it of items) byType[it.type] = (byType[it.type] || 0) + 1;
-  return { items, byType, missingStock, total: items.length };
+  let totalImpact = 0, priced = 0;
+  for (const it of items) {
+    byType[it.type] = (byType[it.type] || 0) + 1;
+    if (it.impactUsd != null) { totalImpact += it.impactUsd; priced += 1; }
+  }
+  return { items, byType, missingStock, total: items.length,
+           totalImpact: priced ? Math.round(totalImpact) : null, priced };
 }

@@ -147,10 +147,13 @@ def _facts_from_snapshot(snap, sections=None):
 
     a = snap.get("attention") or {}
     if a:
+        risk = (f" About {a.get('at_risk')} of margin/capital is at risk across them; "
+                f"the list is ranked by dollars at risk." if a.get("at_risk") else "")
         lines.append(
             f"Needs attention right now: {a.get('total', 0)} products "
             f"({a.get('stockout', 0)} stockout risk, {a.get('overdue', 0)} overdue deliveries, "
             f"{a.get('demand_shift', 0)} demand shifts, {a.get('overstock', 0)} overstocked)."
+            + risk
         )
         for t in (a.get("top") or [])[:5]:
             lines.append(f"  - {t}")

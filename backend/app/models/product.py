@@ -24,6 +24,7 @@ class Product(db.Model):
     on_order = db.Column(db.Float, nullable=True)         # in-transit units
     lead_time_days = db.Column(db.Integer, nullable=True)  # supplier resupply time
     unit_cost = db.Column(db.Float, nullable=True)        # cost per unit
+    price = db.Column(db.Float, nullable=True)            # selling price per unit (for margin/impact)
     moq = db.Column(db.Integer, nullable=True)            # minimum order quantity
     case_pack = db.Column(db.Integer, nullable=True)      # order in multiples of
     inventory_updated_at = db.Column(db.DateTime, nullable=True)  # when on_hand was set

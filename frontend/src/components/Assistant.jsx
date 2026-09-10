@@ -105,6 +105,7 @@ function assembleSnapshot(question, { rows, settings, service, catalog, learning
       overdue: exc.byType.overdue || 0,
       demand_shift: (exc.byType.surge || 0) + (exc.byType.collapse || 0),
       overstock: exc.byType.overstock || 0,
+      at_risk: exc.totalImpact != null ? money(exc.totalImpact) : null,
       top: exc.items.slice(0, 5).map((it) => `${it.name}: ${it.title} — ${it.detail}`),
     },
     plan: {

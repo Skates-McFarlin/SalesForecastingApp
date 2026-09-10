@@ -64,6 +64,7 @@ def upgrade():
         sa.Column('on_order', sa.Float(), nullable=True),
         sa.Column('lead_time_days', sa.Integer(), nullable=True),
         sa.Column('unit_cost', sa.Float(), nullable=True),
+        sa.Column('price', sa.Float(), nullable=True),
         sa.Column('moq', sa.Integer(), nullable=True),
         sa.Column('case_pack', sa.Integer(), nullable=True),
         sa.Column('inventory_updated_at', sa.DateTime(), nullable=True),
