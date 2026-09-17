@@ -42,6 +42,19 @@ def ask():
         return jsonify({"error": str(e)}), 500
 
 
+@assistant_api_bp.route("/signal-reliability", methods=["GET"])
+def signal_reliability():
+    """The attention/trend signals' realized forward reliability (from a backtest
+    of the deterministic signal layer), so the client can rank a speculative
+    demand-move flag by how often it actually pans out. Best-effort - returns an
+    empty record on a catalog without enough history to grade."""
+    try:
+        from app.analytics.signal_grade import catalog_signal_grade
+        return jsonify(catalog_signal_grade()), 200
+    except Exception as e:  # noqa: BLE001
+        return jsonify({"n_signals": 0, "hit_rate": None, "by_type": {}, "error": str(e)}), 200
+
+
 @assistant_api_bp.route("/briefing", methods=["POST"])
 def brief():
     """Proactive 'here's what matters today' - the assistant's opening lead,

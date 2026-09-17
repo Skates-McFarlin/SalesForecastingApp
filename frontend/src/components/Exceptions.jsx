@@ -1,5 +1,5 @@
-import { useMemo, useState } from "react";
-import { createPurchaseOrder } from "../api";
+import { useEffect, useMemo, useState } from "react";
+import { createPurchaseOrder, fetchSignalReliability } from "../api";
 import { deriveExceptions } from "../exceptions";
 import { Card, formatNumber, SectionLabel, Stat } from "./ui";
 
@@ -14,9 +14,18 @@ const SEV = {
 // seller go hunting. Derived live from the current forecast + inventory, so
 // ordering a stockout item drops it off the list.
 export default function Exceptions({ rows, settings, service, onInventoryResult, onOpenForecast }) {
+  // The signal layer's realized reliability, used to discount speculative
+  // demand-move flags when ranking (grounded stockouts keep full weight).
+  const [reliability, setReliability] = useState(null);
+  useEffect(() => {
+    let live = true;
+    fetchSignalReliability().then((r) => live && setReliability(r)).catch(() => {});
+    return () => { live = false; };
+  }, [rows]);
+
   const { items, byType, missingStock, total, totalImpact } = useMemo(
-    () => deriveExceptions(rows, settings, service.z),
-    [rows, settings, service]
+    () => deriveExceptions(rows, settings, service.z, reliability),
+    [rows, settings, service, reliability]
   );
 
   const summary = [

@@ -13,14 +13,25 @@ def _pct(x):
     return f"{x * 100:+.0f}%" if x is not None else "n/a"
 
 
-def build_briefing(trends, trust, attention=None, limit=5):
-    """Rank the noteworthy items from the computed signals. Returns a list of
-    {priority, kind, subject, detail}, highest priority first, capped at `limit`.
-    `attention` (optional) = {stockout, overdue, ...} counts from the client.
+# Which graded signal type each trend-family item is an instance of, so its
+# ranking can be discounted by that type's measured forward reliability.
+_KIND_SIGNAL = {"category_down": "trend", "sku_down": "trend", "category_up": "trend",
+                "quiet_drift": "drift", "shift": "shift"}
+_GROUNDED = {"stockout", "overdue"}   # current facts, never reliability-gated
 
-    Priority: 5 stockout/overdue (act now) > 4 sharp category decline > 3 quiet
-    drift (the non-obvious) / big SKU decline > 2 growth needing supply > 1
-    low-trust caution on an important SKU.
+
+def build_briefing(trends, trust, attention=None, limit=5, reliability=None):
+    """Rank the noteworthy items from the computed signals. Returns a list of
+    {priority, kind, subject, detail}, best first, capped at `limit`. `attention`
+    (optional) = {stockout, overdue, ...} counts from the client.
+
+    Base priority: 5 stockout/overdue (act now) > 4 sharp category decline > 3 quiet
+    drift / big SKU decline > 2 growth needing supply > 1 low-trust. When
+    `reliability` (a {signal_type: hit_rate} map from the signal backtest) is given,
+    the trend-family items are RANKED by base-priority x reliability, so the signal
+    types that actually pan out (measured: quiet drift ~0.65) float above the ones
+    that mostly mean-revert (a lone trend/step ~0.4-0.48). Grounded inventory facts
+    (stockout/overdue) are never gated - they're true now, not predictions.
     """
     from app.analytics.trends import top_movers, quiet_movers, recent_shifts
     from app.analytics.trust import least_trusted
@@ -83,12 +94,34 @@ def build_briefing(trends, trust, attention=None, limit=5):
         k = it["subject"]
         if k not in seen or it["priority"] > seen[k]["priority"]:
             seen[k] = it
-    ranked = sorted(seen.values(), key=lambda it: -it["priority"])
+
+    def score(it):
+        if it["kind"] in _GROUNDED:
+            return 100 + it["priority"]          # grounded facts always lead
+        if it["kind"] == "low_trust":
+            return -1                            # a caveat, always last
+        rel = (reliability or {}).get(_KIND_SIGNAL.get(it["kind"]))
+        # Reliability-weighted urgency = how much it matters x how often it pans
+        # out. Falls back to raw priority when the signal type isn't graded yet.
+        return it["priority"] * rel if rel is not None else it["priority"]
+
+    ranked = sorted(seen.values(), key=score, reverse=True)
     return ranked[:limit]
 
 
 def catalog_briefing(attention=None, limit=5):
-    """DB-backed briefing over the stored catalog."""
+    """DB-backed briefing over the stored catalog, gated by the signal backtest's
+    measured per-type reliability so flaky signal types don't crowd out reliable
+    ones (see app.analytics.signal_grade)."""
     from app.analytics.trends import catalog_trends
     from app.analytics.trust import catalog_trust
-    return build_briefing(catalog_trends(), catalog_trust(), attention=attention, limit=limit)
+    from app.analytics.signal_grade import catalog_signal_grade
+
+    reliability = None
+    try:
+        by_type = catalog_signal_grade().get("by_type", {})
+        reliability = {t: v["hit_rate"] for t, v in by_type.items() if v.get("hit_rate") is not None}
+    except Exception:  # noqa: BLE001 - gating is best-effort; fall back to raw priority
+        reliability = None
+    return build_briefing(catalog_trends(), catalog_trust(), attention=attention,
+                          limit=limit, reliability=reliability or None)

@@ -186,6 +186,12 @@ export async function fetchLearning() {
   return asJson(await fetch(`${BASE}/api/ledger/learning`));
 }
 
+// Realized forward reliability of the trend/shift signals (from a backtest of the
+// deterministic signal layer), used to discount speculative demand-move flags.
+export async function fetchSignalReliability() {
+  return asJson(await fetch(`${BASE}/api/assistant/signal-reliability`));
+}
+
 // The assistant (Phase 6): answers a question grounded in the client-computed
 // snapshot of real figures. The LLM only phrases the answer.
 export async function askAssistant(question, snapshot, history) {

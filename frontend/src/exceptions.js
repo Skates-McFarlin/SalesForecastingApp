@@ -38,8 +38,23 @@ function money(n) {
   return n == null ? null : `$${Math.round(n).toLocaleString()}`;
 }
 
-export function deriveExceptions(rows, settings, z) {
+// How much to trust a speculative demand-MOVE flag (surge/collapse) when ranking:
+// the measured forward reliability of the trend+shift signals. Grounded exceptions
+// (stockout/overdue/overstock) are current facts, so they keep full weight. Falls
+// back to 1.0 (no gating) when the backtest hasn't run / lacks history.
+function demandMoveWeight(reliability) {
+  const bt = reliability?.by_type;
+  if (!bt) return 1;
+  let n = 0, hits = 0;
+  for (const t of ["trend", "shift"]) {
+    if (bt[t]?.n) { n += bt[t].n; hits += bt[t].hits; }
+  }
+  return n ? hits / n : 1;
+}
+
+export function deriveExceptions(rows, settings, z, reliability = null) {
   const items = [];
+  const moveWeight = demandMoveWeight(reliability);
   let missingStock = 0;
   const today = new Date();
   today.setHours(0, 0, 0, 0);
@@ -136,15 +151,21 @@ export function deriveExceptions(rows, settings, z) {
     if (chosen.impactUsd != null && chosen.type !== "overstock") {
       chosen.detail += ` · ~${money(chosen.impactUsd)} at risk`;
     }
+    // Ranking value = dollars at risk, but a speculative demand-move flag
+    // (surge/collapse) is discounted by how often such signals actually pan out,
+    // so a reliable stockout outranks a big-but-flaky "+40% surge". Display still
+    // shows the true dollars; only the RANK is reliability-weighted.
+    const w = (chosen.type === "surge" || chosen.type === "collapse") ? moveWeight : 1;
+    chosen.rankUsd = chosen.impactUsd != null ? chosen.impactUsd * w : null;
     items.push({ key, name: row.ProductName, sku: row.Sku, category: row.Category, ...chosen });
   }
 
-  // Rank by DOLLARS at risk first (the whole point of business-impact), with
-  // urgency as the tiebreaker so a critical run-out still floats within a dollar
-  // band. Items we can't price (no cost/price) fall to the bottom, ranked as before.
+  // Rank by reliability-weighted DOLLARS at risk (business impact, gated by how
+  // often a signal type pans out), urgency as the tiebreaker so a critical run-out
+  // still floats within a band. Unpriced items fall to the bottom, ranked as before.
   items.sort((a, b) =>
-    (b.impactUsd != null) - (a.impactUsd != null) ||
-    (b.impactUsd || 0) - (a.impactUsd || 0) ||
+    (b.rankUsd != null) - (a.rankUsd != null) ||
+    (b.rankUsd || 0) - (a.rankUsd || 0) ||
     RANK[b.severity] - RANK[a.severity] ||
     (b.magnitude || 0) - (a.magnitude || 0));
 
