@@ -202,6 +202,22 @@ function normalCdf(z) { // Abramowitz-Stegun 26.2.17
   const p = d * t * (0.3193815 + t * (-0.3565638 + t * (1.781478 + t * (-1.821256 + t * 1.330274))));
   return z > 0 ? 1 - p : p;
 }
+// Lead time as a distribution: a "typical" (median) plus an optional slow case
+// (~P90) fit a lognormal (right-skewed - no negative leads, long customs/holiday
+// tails). Returns its mean + variance in days; no slow case -> a point estimate
+// (variance 0), so the reorder policy is exactly the point-estimate one. Mirrors
+// inventory_controller.lead_moments.
+export function leadMoments(typical, slow) {
+  const typ = Math.max(0, Number(typical || 0));
+  const sl = Number(slow);
+  if (!slow || Number.isNaN(sl) || sl <= typ) return { mean: typ, variance: 0 };
+  const sigmaLn = (Math.log(sl) - Math.log(typ)) / 1.2816; // P90 z = 1.2816
+  const muLn = Math.log(typ);
+  const mean = Math.exp(muLn + (sigmaLn * sigmaLn) / 2);
+  const variance = mean * mean * (Math.exp(sigmaLn * sigmaLn) - 1);
+  return { mean, variance };
+}
+
 const COUNT_MAX = 120; // above this the normal approximation (CLT) is fine and exact
 // Smallest integer S with CDF(S) >= tau for demand over the protection window.
 function countQuantile(tau, mean, varr) {
@@ -250,21 +266,29 @@ export function reorder(row, settings, z) {
     leadDays = row.LeadTimeDays;
     leadSource = "typed";
   }
-  const L = Math.max(0, Number(leadDays));
+  // Variable lead time: a "typical" lead plus an optional slow case (~P90) become
+  // a lognormal (right-skewed - long customs/holiday tails). We use its MEAN as the
+  // protection-window centre and its VARIANCE to inflate safety stock (below). With
+  // no slow case, leadVar=0 and this is exactly the point-estimate policy.
+  const { mean: meanLead, variance: leadVar } = leadMoments(leadDays, row.LeadP90Days);
+  const L = Math.max(0, meanLead);
   const R = Math.max(1, Number(settings?.review_period_days ?? 7));
   const P = L + R;
 
   const hasInventory = row.OnHand != null && row.OnHand !== "";
   const position = Number(row.OnHand || 0) + Number(row.OnOrder || 0);
 
-  // Order-up-to = the service-level quantile of demand over the protection
-  // window P (and lead time L for the reorder point). Count-aware for low-count
-  // demand (honest on intermittent SKUs), normal for high-volume where it's fine.
+  // Order-up-to = the service-level quantile of demand over the protection window P
+  // (and lead time L for the reorder point). Count-aware for low-count demand
+  // (honest on intermittent SKUs), normal for high-volume. Random lead time adds
+  // one variance term, mu_d^2 * Var(lead), by the law of total variance - the only
+  // correction needed; everything else already handles variable leads.
   const tau = normalCdf(z);
-  const upTo = (mu, sd) =>
-    mu > 0 && mu <= COUNT_MAX ? countQuantile(tau, mu, sd * sd) : mu + z * sd;
-  const orderUpTo = upTo(r * P, s * Math.sqrt(P));
-  const reorderPoint = upTo(r * L, s * Math.sqrt(L));
+  const leadTerm = r * r * leadVar;
+  const upTo = (mu, variance) =>
+    mu > 0 && mu <= COUNT_MAX ? countQuantile(tau, mu, variance) : mu + z * Math.sqrt(Math.max(0, variance));
+  const orderUpTo = upTo(r * P, s * s * P + leadTerm);
+  const reorderPoint = upTo(r * L, s * s * L + leadTerm);
   const safety = Math.max(0, orderUpTo - r * P);
   const order = snapOrder(Math.max(0, orderUpTo - position), Number(row.MOQ) || 0, Number(row.CasePack) || 0);
   const coverDays = hasInventory && r > 0 ? Number(row.OnHand) / r : null;
@@ -275,7 +299,8 @@ export function reorder(row, settings, z) {
     orderUpTo: Math.round(orderUpTo),
     reorderPoint: Math.round(reorderPoint),
     position: Math.round(position),
-    leadTimeDays: L,
+    leadTimeDays: Math.round(L),   // mean lead, rounded for display
+    leadVar,                       // lead-time variance (days^2); >0 when a slow case is set
     leadSource,
     leadObs: Number(row.LeadObs || 0),
     onOrder: Math.round(Number(row.OnOrder || 0)),

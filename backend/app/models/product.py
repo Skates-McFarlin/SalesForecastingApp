@@ -22,7 +22,8 @@ class Product(db.Model):
     # position; lead_time/unit_cost/moq/case_pack are the reorder parameters.
     on_hand = db.Column(db.Float, nullable=True)          # units in stock now
     on_order = db.Column(db.Float, nullable=True)         # in-transit units
-    lead_time_days = db.Column(db.Integer, nullable=True)  # supplier resupply time
+    lead_time_days = db.Column(db.Integer, nullable=True)  # supplier resupply time (typical / median)
+    lead_time_p90_days = db.Column(db.Integer, nullable=True)  # a slow case (~1 in 10) -> lead-time variance
     unit_cost = db.Column(db.Float, nullable=True)        # cost per unit
     price = db.Column(db.Float, nullable=True)            # selling price per unit (for margin/impact)
     moq = db.Column(db.Integer, nullable=True)            # minimum order quantity

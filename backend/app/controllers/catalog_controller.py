@@ -36,6 +36,8 @@ _ALIASES = {
     "unit_cost": ["unit cost", "unit_cost", "cost", "cogs", "cost price"],
     "lead_time": ["lead time", "lead_time_days", "lead time (days)",
                   "lead time days", "leadtime"],
+    "lead_p90": ["lead p90", "lead slow", "slow lead", "lead time slow",
+                 "lead time p90", "worst lead", "lead time (slow)"],
 }
 
 
@@ -90,12 +92,13 @@ def _capture_inventory(rows, col):
     file that carries them - a POS/inventory export usually has on-hand and cost.
     Returns {product key: {on_hand, unit_cost, lead_time_days}} with the last
     non-empty value seen per product (these repeat per row in a long feed)."""
-    if not any(k in col for k in ("on_hand", "unit_cost", "lead_time", "price")):
+    if not any(k in col for k in ("on_hand", "unit_cost", "lead_time", "price", "lead_p90")):
         return {}
     casters = {"on_hand": float, "unit_cost": float, "price": float,
-               "lead_time_days": lambda x: int(float(x))}
+               "lead_time_days": lambda x: int(float(x)),
+               "lead_time_p90_days": lambda x: int(float(x))}
     src = {"on_hand": "on_hand", "unit_cost": "unit_cost", "price": "price",
-           "lead_time_days": "lead_time"}
+           "lead_time_days": "lead_time", "lead_time_p90_days": "lead_p90"}
     out = {}
     for row in rows:
         name = (row.get(col.get("name", ""), "") or "").strip()
