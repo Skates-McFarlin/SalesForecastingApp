@@ -143,16 +143,23 @@ def _signal_grade_lines():
     if not g.get("n_signals"):
         return []
     bt = g.get("by_type", {})
-    parts = [f"{t} {int(round(v['hit_rate'] * 100))}%"
-             for t, v in sorted(bt.items(), key=lambda kv: -kv[1]["hit_rate"])]
-    return [
-        f"Signal track record (attention layer, graded by backtest against what "
-        f"happened next): of {g['n_signals']} past trend/drift/step signals, "
-        f"{int(round(g['hit_rate'] * 100))}% continued in the flagged direction over "
-        f"the next quarter. By type (most reliable first): {', '.join(parts)}. "
-        f"Quiet drifts are the most dependable; a lone significant-trend or abrupt-step "
-        f"flag is more descriptive than predictive, so weigh it with the forecast."
-    ]
+    # Lift over the base rate is the honest number - a hit-rate alone is meaningless
+    # (the unconditional continuation base rate is ~45-52%). Report only the signal
+    # types that beat their base rate; note the anti-predictive ones are suppressed.
+    good = sorted([(k, v) for k, v in bt.items() if v.get("lift", 0) > 0.01],
+                  key=lambda kv: -kv[1]["lift"])
+    anti = [k for k, v in bt.items() if v.get("lift", 0) <= 0]
+    if not good:
+        return []
+    parts = [f"{k.replace('_', ' ')} {int(round(v['hit_rate'] * 100))}% vs "
+             f"{int(round(v['base_rate'] * 100))}% base (+{int(round(v['lift'] * 100))}pt)"
+             for k, v in good]
+    line = (f"Signal track record (attention layer, backtested vs the unconditional "
+            f"base rate): {'; '.join(parts)}. Quiet drifts are the most predictive; "
+            f"the ranking already down-weights or drops the weaker ones.")
+    if anti:
+        line += (f" Suppressed as no better than chance: {', '.join(a.replace('_', ' ') for a in anti)}.")
+    return [line]
 
 
 def _reorder_rationale_lines(snap, entities):

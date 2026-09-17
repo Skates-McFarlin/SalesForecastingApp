@@ -38,23 +38,25 @@ function money(n) {
   return n == null ? null : `$${Math.round(n).toLocaleString()}`;
 }
 
-// How much to trust a speculative demand-MOVE flag (surge/collapse) when ranking:
-// the measured forward reliability of the trend+shift signals. Grounded exceptions
-// (stockout/overdue/overstock) are current facts, so they keep full weight. Falls
-// back to 1.0 (no gating) when the backtest hasn't run / lacks history.
-function demandMoveWeight(reliability) {
-  const bt = reliability?.by_type;
-  if (!bt) return 1;
-  let n = 0, hits = 0;
-  for (const t of ["trend", "shift"]) {
-    if (bt[t]?.n) { n += bt[t].n; hits += bt[t].hits; }
-  }
-  return n ? hits / n : 1;
+// How much to trust a speculative demand-MOVE flag when ranking: the measured
+// predictive LIFT (hit-rate minus base rate) of the trend/shift signals in that
+// DIRECTION, scaled to 0..1. Directional matters - on real data a down-move
+// (collapse) is modestly predictive while an up-move (surge) is anti-predictive
+// (fires on spikes that revert), so surge is suppressed. Grounded exceptions
+// (stockout/overdue/overstock) are current facts and keep full weight. Falls back
+// to 1.0 (no gating) when the backtest hasn't run / lacks history.
+const LIFT_FULL = 0.2; // lift at which a signal earns full weight (drift ~+0.20)
+function demandMoveWeight(reliability, dir) {
+  const w = reliability?.weights;
+  if (!w || Object.keys(w).length === 0) return 1;   // not graded yet -> ungated
+  const lift = Math.max(w[`trend_${dir}`] ?? 0, w[`shift_${dir}`] ?? 0);
+  return Math.min(1, Math.max(0, lift / LIFT_FULL));
 }
 
 export function deriveExceptions(rows, settings, z, reliability = null) {
   const items = [];
-  const moveWeight = demandMoveWeight(reliability);
+  const surgeWeight = demandMoveWeight(reliability, "up");     // usually ~0 (anti-predictive)
+  const collapseWeight = demandMoveWeight(reliability, "down");
   let missingStock = 0;
   const today = new Date();
   today.setHours(0, 0, 0, 0);
@@ -155,7 +157,8 @@ export function deriveExceptions(rows, settings, z, reliability = null) {
     // (surge/collapse) is discounted by how often such signals actually pan out,
     // so a reliable stockout outranks a big-but-flaky "+40% surge". Display still
     // shows the true dollars; only the RANK is reliability-weighted.
-    const w = (chosen.type === "surge" || chosen.type === "collapse") ? moveWeight : 1;
+    const w = chosen.type === "surge" ? surgeWeight
+      : chosen.type === "collapse" ? collapseWeight : 1;
     chosen.rankUsd = chosen.impactUsd != null ? chosen.impactUsd * w : null;
     items.push({ key, name: row.ProductName, sku: row.Sku, category: row.Category, ...chosen });
   }

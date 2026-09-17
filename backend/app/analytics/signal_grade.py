@@ -24,6 +24,11 @@ import numpy as np
 
 from .trends import series_momentum, _season
 
+# A per-(type,direction) weight is only trusted with enough graded samples -
+# otherwise a lucky small-n bucket shows a large spurious lift (the multiple-
+# testing trap). Below this, weight is 0 (the ranking falls back to raw priority).
+MIN_GRADED = 30
+
 
 def _direction(rec):
     """+1 if the record carries an up-signal, -1 a down-signal, 0 if none - using
@@ -51,26 +56,31 @@ def _label(rec, direction):
 
 
 def grade_series(y, season, horizon=3, max_origins=6):
-    """Backtest one series' signals. Returns a list of graded signals
-    {cut, dir, type, realized_yoy, hit}. Cutoffs step back by `horizon` (so the
-    graded windows don't overlap) from the latest point that still leaves `horizon`
-    future periods; each needs a full year of history plus the YoY comparison base."""
+    """Backtest one series at each cutoff. Records EVERY cutoff (not just the ones a
+    signal fired on) so the caller can compute the unconditional continuation base
+    rate - a hit-rate is meaningless without it. Each record: signal direction `sig`
+    (-1/0/+1), its `type`, and the realized continuation direction `realized_dir`
+    (sign of the trailing-annual-sum change `horizon` periods later)."""
     y = np.asarray(y, dtype=float)
     n = len(y)
     min_hist = 2 * season
     out = []
     c = n - horizon
-    while c >= min_hist and len(out) < max_origins:
+    graded = 0
+    while c >= min_hist:
         if c - season >= 0:
-            rec = series_momentum(y[:c], season)
-            d = _direction(rec)
-            base_lvl = float(y[c - season:c].sum())            # trailing annual sum at cut
-            fut_lvl = float(y[c + horizon - season:c + horizon].sum())  # ...`horizon` later
-            if d != 0 and base_lvl > 0:
-                realized = fut_lvl / base_lvl - 1.0            # change in sustained level
-                hit = realized < 0 if d < 0 else realized > 0
-                out.append({"cut": c, "dir": d, "type": _label(rec, d),
-                            "realized": round(realized, 3), "hit": bool(hit)})
+            base_lvl = float(y[c - season:c].sum())
+            fut_lvl = float(y[c + horizon - season:c + horizon].sum())
+            if base_lvl > 0:
+                rec = series_momentum(y[:c], season)
+                d = _direction(rec)
+                realized = fut_lvl / base_lvl - 1.0
+                out.append({"cut": c, "sig": d, "type": _label(rec, d) if d else None,
+                            "realized_dir": -1 if realized < 0 else (1 if realized > 0 else 0)})
+                if d != 0:
+                    graded += 1
+                    if graded >= max_origins:
+                        break
         c -= horizon
     return out
 
@@ -90,24 +100,41 @@ def grade_panel(df, grain_label, horizon=3):
     return summarize(grades)
 
 
-def summarize(grades):
-    n = len(grades)
-    if not n:
-        return {"n_signals": 0, "hits": 0, "hit_rate": None,
-                "false_alarm_rate": None, "by_type": {}}
-    hits = sum(1 for g in grades if g["hit"])
-    by_type = {}
-    for g in grades:
-        t = by_type.setdefault(g["type"], {"n": 0, "hits": 0})
-        t["n"] += 1
-        t["hits"] += int(g["hit"])
-    for t in by_type.values():
-        t["hit_rate"] = round(t["hits"] / t["n"], 3)
+def summarize(records):
+    """Aggregate cutoff records into base rates + per-(type, direction) hit-rate,
+    LIFT over the base rate, and a predictive `weight` (max(0, lift) - anti-
+    predictive signals get 0, so gating suppresses them). `weights` is the flat map
+    the ranking layers consume, keyed 'type_up'/'type_down'."""
+    total = len(records)
+    fired = [r for r in records if r["sig"] != 0]
+    if not total:
+        return {"n_signals": 0, "hit_rate": None, "base_down": None, "base_up": None,
+                "by_type": {}, "weights": {}}
+    base_down = sum(1 for r in records if r["realized_dir"] < 0) / total
+    base_up = sum(1 for r in records if r["realized_dir"] > 0) / total
+
+    groups = {}   # (type, dir) -> [n, hits]
+    for r in fired:
+        key = (r["type"], "down" if r["sig"] < 0 else "up")
+        g = groups.setdefault(key, [0, 0])
+        g[0] += 1
+        g[1] += int(r["realized_dir"] == r["sig"])
+
+    by_type, weights = {}, {}
+    for (t, d), (n, hits) in groups.items():
+        hit = hits / n
+        base = base_down if d == "down" else base_up
+        lift = hit - base
+        by_type[f"{t}_{d}"] = {"n": n, "hit_rate": round(hit, 3),
+                               "base_rate": round(base, 3), "lift": round(lift, 3)}
+        # 0 => not surfaced (anti-predictive, or too few samples to trust).
+        weights[f"{t}_{d}"] = round(max(0.0, lift), 3) if n >= MIN_GRADED else 0.0
+    hits = sum(1 for r in fired if r["realized_dir"] == r["sig"])
     return {
-        "n_signals": n, "hits": hits,
-        "hit_rate": round(hits / n, 3),
-        "false_alarm_rate": round(1 - hits / n, 3),
-        "by_type": by_type,
+        "n_signals": len(fired),
+        "hit_rate": round(hits / len(fired), 3) if fired else None,
+        "base_down": round(base_down, 3), "base_up": round(base_up, 3),
+        "by_type": by_type, "weights": weights,
     }
 
 
