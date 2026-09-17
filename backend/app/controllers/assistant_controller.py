@@ -131,6 +131,30 @@ def _named_trust_lines(tu, entities):
     return lines
 
 
+def _signal_grade_lines():
+    """A realized track record for the ATTENTION signals (not just forecasts): of
+    the trends/drifts/steps we flagged in the past, how many actually continued -
+    graded by backtest against what happened next. Answers 'do you cry wolf?'."""
+    try:
+        from app.analytics.signal_grade import catalog_signal_grade
+        g = catalog_signal_grade()
+    except Exception:  # noqa: BLE001
+        return []
+    if not g.get("n_signals"):
+        return []
+    bt = g.get("by_type", {})
+    parts = [f"{t} {int(round(v['hit_rate'] * 100))}%"
+             for t, v in sorted(bt.items(), key=lambda kv: -kv[1]["hit_rate"])]
+    return [
+        f"Signal track record (attention layer, graded by backtest against what "
+        f"happened next): of {g['n_signals']} past trend/drift/step signals, "
+        f"{int(round(g['hit_rate'] * 100))}% continued in the flagged direction over "
+        f"the next quarter. By type (most reliable first): {', '.join(parts)}. "
+        f"Quiet drifts are the most dependable; a lone significant-trend or abrupt-step "
+        f"flag is more descriptive than predictive, so weigh it with the forecast."
+    ]
+
+
 def _reorder_rationale_lines(snap, entities):
     """Explain WHY the recommended order is what it is - the deterministic reorder
     math the app already computed (lead-time-demand + safety stock + coverage). The
@@ -278,6 +302,7 @@ def _assemble_facts(group, entities, snapshot, trends, trust):
         L += _snap_lines(S, {"business", "plan", "budget_scenario", "products"})
     elif group == "accuracy":
         L += _snap_lines(S, {"business", "track_record"})
+        L += _signal_grade_lines()
     elif group == "forecast":
         L += _snap_lines(S, {"business", "products"})
         L += _named_momentum_lines(trends, entities)
