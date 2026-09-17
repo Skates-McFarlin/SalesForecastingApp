@@ -50,10 +50,22 @@ GROUP = {
     "shift": "shift", "accuracy": "accuracy", "trust": "trust",
     "budget": "plan", "reorder": "plan", "forecast": "forecast",
     "trend": "trend", "attention": "attention", "overview": "overview",
-    "product": "product", "unknown": "unknown",
+    "product": "product", "rationale": "rationale", "unknown": "unknown",
 }
 
 _AMOUNT = re.compile(r"\$\s?\d|\d[\d,]*\s?(k\b|thousand|dollars|budget)", re.I)
+
+# "Why 40 units?" - explain the reorder MATH. Needs an explanation cue AND a
+# reorder context (so "why is demand falling" stays a trend question, not a
+# rationale one). Two phrases are rationale on their own.
+_WHY_CUES = ["why", "explain", "justify", "how did you", "how do you get",
+             "how'd you get", "how come", "break down", "breakdown",
+             "walk me through", "reasoning", "rationale", "where'd that", "where did that"]
+_REORDER_CTX = ["order", "reorder", "units", "buy", "restock", "safety stock",
+                "reorder point", "order-up-to", "that many", "so many", "this many",
+                "that number", "that much"]
+_RATIONALE_STANDALONE = ["safety stock", "reorder point"]
+_NUMBER_RE = re.compile(r"\b\d+\b")
 
 
 def _tokens(s):
@@ -79,12 +91,23 @@ def find_entities(question, names):
     return out
 
 
-def classify(question, names=None):
-    """Route a question. Returns {intent, group, entities, has_amount, scores}.
+def _is_rationale(q):
+    """A 'why that many' question about the reorder math (not a 'why is it
+    declining' trend question)."""
+    if any(p in q for p in _RATIONALE_STANDALONE):
+        return True
+    cue = any(c in q for c in _WHY_CUES)
+    ctx = any(c in q for c in _REORDER_CTX) or bool(_NUMBER_RE.search(q))
+    return cue and ctx
 
-    intent is the fine label; group is the fact bucket the caller fills. A named
-    product with no clear ask becomes 'product' (a focused per-SKU summary). No
-    keyword and no entity -> 'unknown' (the caller answers with capabilities)."""
+
+def classify(question, names=None):
+    """Route a question. Returns {intent, group, groups, entities, has_amount, scores}.
+
+    intent is the fine label; group is the fact bucket the caller fills; groups is
+    group plus any SECONDARY groups a compound question also asks for ("reorder X,
+    and how's it trending?"). A named product with no clear ask becomes 'product';
+    no keyword and no entity -> 'unknown' (the caller answers with capabilities)."""
     q = f" {(question or '').lower().strip()} "
     entities = find_entities(question, names)
     scores = {}
@@ -106,7 +129,18 @@ def classify(question, names=None):
     if entities and intent in ("unknown", "overview"):
         intent = "product"         # a product named with no ask (or a generic
                                    # "tell me about X") -> summarize that product
-    # A bare entity trend question ("how is X") should focus on that SKU, not the
-    # whole catalog; the caller keys off `entities` for that.
-    return {"intent": intent, "group": GROUP[intent], "entities": entities,
-            "has_amount": has_amount, "scores": scores}
+    # "Why that many?" about a reorder overrides the generic scoring (its 'why'
+    # would otherwise score nothing or read as trend).
+    if _is_rationale(q):
+        intent = "rationale"
+
+    # Compound: a question can ask for more than one thing. Collect the distinct
+    # GROUPS that fired (primary first), so the caller can assemble facts for each.
+    groups = [GROUP[intent]]
+    for name, _ in INTENTS:
+        g = GROUP.get(name)
+        if scores.get(name) and g not in groups and intent != "unknown":
+            groups.append(g)
+    groups = groups[:3]
+    return {"intent": intent, "group": GROUP[intent], "groups": groups,
+            "entities": entities, "has_amount": has_amount, "scores": scores}

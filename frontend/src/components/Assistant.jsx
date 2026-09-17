@@ -14,16 +14,42 @@ const SUGGESTIONS = [
 const money = (n) => `$${Math.round(n).toLocaleString()}`;
 const pct = (x) => `${Math.round(x * 100)}%`;
 
-function resolveProducts(question, rows) {
+function resolveProducts(question, rows, settings, z) {
   const q = question.toLowerCase();
+  const nums = (q.match(/\d+/g) || []).map(Number);
   const out = [];
+  const seen = new Set();
+  const add = (r) => {
+    const k = r.Sku || r.ProductName;
+    if (!seen.has(k)) { seen.add(k); out.push(r); }
+  };
+  // By name / SKU mentioned in the question.
   for (const r of rows) {
     const sku = (r.Sku || "").toLowerCase();
     const words = (r.ProductName || "").toLowerCase().split(/[^a-z0-9]+/).filter((w) => w.length >= 4);
-    if ((sku && q.includes(sku)) || words.some((w) => q.includes(w))) out.push(r);
+    if ((sku && q.includes(sku)) || words.some((w) => q.includes(w))) add(r);
     if (out.length >= 4) break;
   }
-  return out;
+  // By the ORDER QUANTITY named in the question ("why 40 units?" -> the SKU whose
+  // recommended order is ~40), so a bare rationale follow-up resolves its product.
+  if (nums.length && out.length < 4) {
+    for (const r of rows) {
+      const d = reorder(r, settings, z);
+      if (d.hasInventory && d.order > 0 &&
+          nums.some((n) => Math.abs(n - d.order) <= Math.max(1, d.order * 0.02))) add(r);
+      if (out.length >= 4) break;
+    }
+  }
+  // A "why/explain/how" reorder question with nothing else resolved -> the top
+  // reorder-now items, so "why that many?" has something concrete to explain.
+  if (!out.length && /\b(why|explain|justif|how (did|do|come)|reorder point|safety stock|that many|so many|this many)\b/i.test(q)) {
+    rows.map((r) => ({ r, d: reorder(r, settings, z) }))
+      .filter((x) => x.d.hasInventory && x.d.reorderNow && x.d.order > 0)
+      .sort((a, b) => b.d.order - a.d.order)
+      .slice(0, 3)
+      .forEach((x) => add(x.r));
+  }
+  return out.slice(0, 4);
 }
 
 // Assemble a snapshot of REAL, client-computed figures for the question. The
@@ -75,8 +101,12 @@ function assembleSnapshot(question, { rows, settings, service, catalog, learning
     }
   }
 
-  const products = resolveProducts(question, rows).map((r) => {
+  const reviewDays = Math.max(1, Number(settings?.review_period_days ?? 7));
+  const products = resolveProducts(question, rows, settings, z).map((r) => {
     const d = reorder(r, settings, z);
+    const rate = Math.max(0, Number(r.DailyRate || 0));
+    const P = d.leadTimeDays + reviewDays;
+    const rawOrder = Math.max(0, d.orderUpTo - d.position);
     return {
       name: r.ProductName,
       sku: r.Sku,
@@ -91,6 +121,24 @@ function assembleSnapshot(question, { rows, settings, service, catalog, learning
       // Stockout de-censoring: the forecast reconstructed likely-out-of-stock
       // periods to demand, so the assistant can explain a lifted forecast.
       stockout_periods: Array.isArray(r.StockoutPeriods) ? r.StockoutPeriods : [],
+      // The reorder MATH, so the assistant can answer "why that many?" from real
+      // computed numbers (never derived by the model).
+      rationale: rate > 0 ? {
+        order: d.order,
+        order_up_to: d.orderUpTo,
+        reorder_point: d.reorderPoint,
+        safety: d.safety,
+        position: d.position,
+        on_hand: r.OnHand != null ? Math.round(Number(r.OnHand)) : null,
+        on_order: d.onOrder,
+        lead_days: d.leadTimeDays,
+        lead_source: d.leadSource,
+        review_days: reviewDays,
+        protection_days: Math.round(P),
+        expected_over_window: Math.round(rate * P),
+        service_level: service.label,
+        rounded: Math.round(rawOrder) !== d.order,
+      } : null,
     };
   });
 

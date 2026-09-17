@@ -131,6 +131,40 @@ def _named_trust_lines(tu, entities):
     return lines
 
 
+def _reorder_rationale_lines(snap, entities):
+    """Explain WHY the recommended order is what it is - the deterministic reorder
+    math the app already computed (lead-time-demand + safety stock + coverage). The
+    client attaches a `rationale` block to each product it surfaced (the named ones,
+    the one whose order matches a number in the question, or the top reorder-now
+    items); we lay the arithmetic out so the model just narrates it."""
+    prods = [p for p in (snap.get("products") or []) if p.get("rationale")]
+    if entities:
+        named = [p for p in prods if p.get("name") in entities]
+        prods = named or prods
+    lines = []
+    for p in prods[:4]:
+        r = p["rationale"]
+        parts = [f"Reorder math for {p.get('name')}: recommended order {r.get('order')} units."]
+        if r.get("order_up_to") is not None:
+            parts.append(
+                f"Order-up-to target is {r.get('order_up_to')} units - enough to cover the "
+                f"~{r.get('protection_days')} days until a fresh order lands (lead time "
+                f"{r.get('lead_days')}d {('(' + r['lead_source'] + ')') if r.get('lead_source') else ''} "
+                f"+ {r.get('review_days')}d review) at {r.get('service_level')} service: about "
+                f"{r.get('expected_over_window')} expected demand plus {r.get('safety')} safety stock "
+                f"for variability.")
+        if r.get("position") is not None:
+            parts.append(
+                f"You already hold {r.get('position')} ({r.get('on_hand')} on hand + "
+                f"{r.get('on_order')} on order), so order = {r.get('order_up_to')} - "
+                f"{r.get('position')} = {r.get('order')}"
+                + (" (rounded to your MOQ/case pack)." if r.get('rounded') else "."))
+        if r.get("reorder_point") is not None:
+            parts.append(f"Reorder point is {r.get('reorder_point')} (demand over just the lead time).")
+        lines.append(" ".join(pp for pp in parts if pp))
+    return lines
+
+
 def _facts_from_snapshot(snap, sections=None):
     """Render the frontend's computed snapshot as labeled fact lines - the only
     numbers the model is allowed to use. `sections` (a set) selects which blocks
@@ -256,6 +290,9 @@ def _assemble_facts(group, entities, snapshot, trends, trust):
         if not entities:
             L += _trust_catalog_lines(trust)
         L += _named_trust_lines(trust, entities)
+    elif group == "rationale":
+        L += _snap_lines(S, {"business"})
+        L += _reorder_rationale_lines(S, entities)
     elif group == "product":
         L += _snap_lines(S, {"business", "products"})
         L += _named_momentum_lines(trends, entities)
@@ -289,21 +326,28 @@ def answer(question, snapshot, history=None):
              + [c["category"] for c in trends.get("categories", [])])
 
     route = classify(question, names)
-    group, entities = route["group"], route["entities"]
+    groups, entities = route["groups"], route["entities"]
 
     # Visible failure: an off-topic ask gets a straight capabilities reply, not a
     # confident hallucination. No model call.
-    if group == "unknown":
+    if route["group"] == "unknown":
         return CAPABILITIES, False
 
     trust = {"skus": []}
-    if group in ("trust", "product", "overview"):
+    if any(g in ("trust", "product", "overview") for g in groups):
         try:
             trust = catalog_trust()
         except Exception:  # noqa: BLE001
             trust = {"skus": []}
 
-    facts = "\n".join(_assemble_facts(group, entities, S, trends, trust))
+    # Assemble facts for every group the question touches (compound questions),
+    # de-duped in order.
+    seen, lines = set(), []
+    for g in groups:
+        for ln in _assemble_facts(g, entities, S, trends, trust):
+            if ln not in seen:
+                seen.add(ln); lines.append(ln)
+    facts = "\n".join(lines)
     if not facts.strip():
         return (
             "I don't have the data to answer that yet — import a catalog and run a "
