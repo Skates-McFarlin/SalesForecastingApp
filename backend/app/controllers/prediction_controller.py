@@ -522,15 +522,21 @@ def _unsupported_numbers(text, prompt):
             supported.add(a + b)
     supported |= {round(v, 1) for v in list(supported)}
 
+    # A number written as a PERCENTAGE is a factual claim ("down 9%") and must be
+    # grounded whatever its size - otherwise the small-number exemption below lets
+    # a fabricated small percentage slip through, the one place hallucinated figures
+    # could still enter. Captured here (as absolute values) so the size gate skips them.
+    pct_numbers = {abs(float(m.replace(",", "")))
+                   for m in re.findall(r"\d[\d,]*(?:\.\d+)?(?=\s*%)", text)}
+
     unsupported = []
     for value in _numbers_in(text):
-        # Ignore small integers and years: these are calendar references
-        # ("3-4 sentences", "January 2025"), not factual claims about sales.
-        if value <= 12 or (1900 <= value <= 2100):
+        # Ignore small integers and years - calendar references ("3-4 sentences",
+        # "next 3 months", "January 2025"), not factual claims - UNLESS the number
+        # was stated as a percentage, which is always a claim.
+        if value not in pct_numbers and (value <= 12 or (1900 <= value <= 2100)):
             continue
         # Tolerance covers rounding, e.g. "7.21" restated as "7.2".
-        if any(abs(value - s) <= max(0.15, s * 0.01) for s in supported):
-            continue
         if any(abs(value - s) <= max(0.15, s * 0.01) for s in supported):
             continue
         unsupported.append(value)
