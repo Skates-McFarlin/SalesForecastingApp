@@ -23,16 +23,30 @@ SKU_COLUMN = "Product ID (SKU)"
 
 # Accepted header aliases for a long/transactional feed (case-insensitive), so
 # a Shopify/Square/POS export or the simulator's output all import cleanly.
+# Aliases are tried in order; the first header present wins. A human SKU (MSKU)
+# beats ASIN as identity, and a real unit-price column beats a line total.
 _ALIASES = {
-    "sku": ["product id (sku)", "sku", "product id", "variant sku", "item"],
-    "name": ["product name", "name", "product", "title", "item name"],
-    "date": ["date", "day", "order date", "week"],
-    "qty": ["quantity", "qty", "units", "units sold", "quantity sold"],
-    "price": ["unit price", "price", "unit_price"],
+    "sku": ["product id (sku)", "sku", "seller-sku", "seller sku", "merchant-sku",
+            "msku", "product id", "variant sku", "item",
+            "asin", "(child) asin", "child asin", "(parent) asin", "fnsku"],
+    "name": ["product name", "name", "product", "title", "item name", "item-name",
+             "product-name"],
+    "date": ["date", "day", "order date", "purchase-date", "purchase date",
+             "shipment date", "shipment-date", "datetime", "date/time", "week"],
+    "qty": ["quantity", "qty", "units", "units sold", "quantity sold",
+            "units ordered", "units-ordered", "quantity-purchased",
+            "quantity purchased", "shipped-quantity", "quantity shipped"],
+    "price": ["unit price", "price", "unit_price", "average sales price"],
+    # A per-line/per-period total (Amazon "item-price", "ordered product sales")
+    # that we divide by the quantity to recover a unit price when none is given.
+    "revenue": ["item-price", "item price", "ordered product sales", "sales"],
     "category": ["category", "type", "product type"],
     # Inventory state & economics (Phase 2) - picked up from the file when present.
+    # Includes Amazon FBA inventory-report columns for on-hand.
     "on_hand": ["on hand", "on_hand", "stock", "stock on hand", "quantity on hand",
-                "qoh", "inventory", "inventory on hand"],
+                "qoh", "inventory", "inventory on hand", "afn-fulfillable-quantity",
+                "afn fulfillable quantity", "fulfillable quantity", "available",
+                "sellable quantity"],
     "unit_cost": ["unit cost", "unit_cost", "cost", "cogs", "cost price"],
     "lead_time": ["lead time", "lead_time_days", "lead time (days)",
                   "lead time days", "leadtime"],
@@ -71,6 +85,12 @@ def _long_to_json(rows, headers):
         except (ValueError, KeyError, TypeError):
             continue
         price = row.get(col.get("price", ""))
+        # No unit-price column (an Amazon orders report gives "item-price", a line
+        # total) - recover the unit price by dividing the line total by the units.
+        if (price in (None, "")) and "revenue" in col and qty:
+            rev = _to_price(row.get(col["revenue"]))
+            if rev is not None:
+                price = rev / qty
         json_data.append({"ds": ds, "y": qty, "product_name": name or key,
                           "sku": sku, "price": price})
         if key not in extra:
@@ -123,15 +143,20 @@ def _capture_inventory(rows, col):
 def import_sales(file):
     """Parse an uploaded sales file and merge it into the catalog.
 
-    Returns a summary of what changed so the UI can confirm the sync. Accepts
-    both a long/transactional file (Date + Quantity columns - daily-capable) and
-    the wide monthly spreadsheet ("Quantity Sold {Mon} {Year}" columns).
+    Returns a summary of what changed so the UI can confirm the sync. Accepts a
+    long/transactional feed (Date + Quantity columns - daily-capable, e.g. an
+    Amazon orders report), the wide monthly spreadsheet ("Quantity Sold {Mon}
+    {Year}" columns), and an inventory-only snapshot (identity + on-hand, no
+    sales - e.g. an Amazon FBA inventory report) that just refreshes stock.
     """
     rows, headers = _read_rows(file)
     col = _resolve_columns(headers)
     inv_by_key = _capture_inventory(rows, col)  # on-hand/cost/lead-time if present
+    has_wide = any(re.match(r"Quantity Sold \w+ \d{4}", h) for h in headers)
     if "date" in col and "qty" in col:  # a long/transactional (daily) feed
         json_data, extra_context_by_group = _long_to_json(rows, headers)
+    elif not has_wide and inv_by_key:  # an inventory-only snapshot, no sales
+        json_data, extra_context_by_group = [], {}
     else:  # the wide monthly spreadsheet
         file.stream.seek(0)
         json_data, extra_context_by_group = preprocess_data(file)
@@ -227,6 +252,19 @@ def import_sales(file):
             priced = [p for p in priced if p is not None]
             if priced:
                 product.price = priced[-1]
+
+    # Inventory-only rows (e.g. an Amazon FBA inventory snapshot: identity plus
+    # on-hand, no sales) still update stock/cost/lead for products already in the
+    # catalog - so a seller can import their orders history and their stock levels
+    # as two separate files.
+    unhandled = set(inv_by_key) - set(rows_by_key)
+    if unhandled:
+        for product in Product.query.filter(Product.key.in_(list(unhandled))).all():
+            for field, value in inv_by_key[product.key].items():
+                setattr(product, field, value)
+            if "on_hand" in inv_by_key[product.key]:
+                product.inventory_updated_at = datetime.utcnow()
+            stats["products_updated"] += 1
 
     db.session.commit()
 

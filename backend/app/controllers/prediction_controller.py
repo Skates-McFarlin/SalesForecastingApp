@@ -1258,10 +1258,12 @@ def get_or_generate_summary(prediction):
 
 
 def _read_rows(data):
-    """Read an uploaded CSV or Excel file into a list of string-keyed row dicts.
+    """Read an uploaded CSV, tab-delimited flat file, or Excel into row dicts.
 
     Detects format from the filename, falling back to sniffing the ZIP
     signature all xlsx/xls files start with (in case the extension lies).
+    Amazon Seller Central reports are tab-delimited .txt in Latin-1/UTF-8, so
+    text files are sniffed for their delimiter and tolerate either encoding.
     """
     data.stream.seek(0)
     raw = data.stream.read()
@@ -1270,10 +1272,30 @@ def _read_rows(data):
     if filename.endswith((".xlsx", ".xls")) or raw[:2] == b"PK":
         df = pd.read_excel(io.BytesIO(raw))
     else:
-        df = pd.read_csv(io.BytesIO(raw))
+        df = _read_delimited(raw, filename)
 
     df = df.fillna("")
     return df.astype(str).to_dict(orient="records"), [str(c) for c in df.columns]
+
+
+def _read_delimited(raw, filename):
+    """Parse delimited text, sniffing tab vs comma and tolerating the encodings
+    Amazon/POS exports use. Amazon's flat files are tab-delimited .txt; a tab
+    file saved as .csv still lands as one fat column, so we retry on tab."""
+    sep = "\t" if filename.endswith((".txt", ".tsv")) else ","
+    df = None
+    for enc in ("utf-8-sig", "latin-1"):
+        try:
+            df = pd.read_csv(io.BytesIO(raw), sep=sep, encoding=enc)
+            break
+        except (UnicodeDecodeError, pd.errors.ParserError):
+            continue
+    if df is None:
+        df = pd.read_csv(io.BytesIO(raw), sep=sep, encoding="latin-1", on_bad_lines="skip")
+    # Tab-delimited data read as comma comes back as a single column - retry on tab.
+    if df.shape[1] == 1 and b"\t" in raw[:8192]:
+        df = pd.read_csv(io.BytesIO(raw), sep="\t", encoding="latin-1", on_bad_lines="skip")
+    return df
 
 
 SKU_COLUMN = "Product ID (SKU)"
