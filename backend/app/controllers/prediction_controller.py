@@ -769,6 +769,31 @@ def _near_term_daily(fc, grain):
     return max(0.0, daily_rate), max(0.0, daily_sigma)
 
 
+def _finite_forecast(fc, y_series):
+    """Guarantee a forecast has no NaN/inf values. A model can emit non-finite
+    points for a very short or sparse series - a newly launched SKU with a
+    handful of periods, which Amazon catalogs are full of - and a single one used
+    to crash the whole scan at round(NaN). Replace any non-finite value with a
+    naive per-period level (the recent mean of actual sales), collapsing the band
+    to the point where we have nothing better to say."""
+    yhat = np.asarray(fc.yhat, dtype=float)
+    low = np.asarray(fc.low, dtype=float)
+    high = np.asarray(fc.high, dtype=float)
+    if np.isfinite(yhat).all() and np.isfinite(low).all() and np.isfinite(high).all():
+        return fc
+    y = np.asarray(y_series, dtype=float)
+    y = y[np.isfinite(y)]
+    level = float(np.mean(y[-8:])) if y.size else 0.0
+    if not np.isfinite(level) or level < 0:
+        level = 0.0
+    yhat = np.where(np.isfinite(yhat), yhat, level)
+    low = np.where(np.isfinite(low), low, yhat)
+    high = np.where(np.isfinite(high), high, yhat)
+    low = np.minimum(low, yhat)   # keep low <= yhat <= high after patching
+    high = np.maximum(high, yhat)
+    return Forecast(yhat=yhat, low=low, high=high)
+
+
 def predict_sales_forecasting(data, duration):
     """Forecast from an uploaded file (stores the file blob, then forecasts).
 
@@ -999,6 +1024,9 @@ def _forecast_core(json_data, extra_context_by_group, duration,
         extra_context = extra_context_by_group.get(group_key, {})
 
         model_label, fc = forecasts[group_key]
+        # Harden against a non-finite forecast from a thin/sparse SKU so one can't
+        # crash the whole scan (Amazon catalogs carry many newly-launched SKUs).
+        fc = _finite_forecast(fc, df_product["y"])
         # Forecast total over the reported window - stored in the ledger as the
         # learning signal so the app can later grade this forecast against real
         # sales (observed bias + realized coverage, surfaced as a track record).

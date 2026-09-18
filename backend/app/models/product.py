@@ -30,6 +30,13 @@ class Product(db.Model):
     case_pack = db.Column(db.Integer, nullable=True)      # order in multiples of
     inventory_updated_at = db.Column(db.DateTime, nullable=True)  # when on_hand was set
 
+    # Amazon FBA fee economics (nullable - only set for FBA sellers who import the
+    # storage-fees / inventory-age reports). When present these give the REAL
+    # numbers; when absent the overstock model estimates from volume + a schedule.
+    fba_storage_fee_monthly = db.Column(db.Float, nullable=True)  # $/mo storage, all on-hand units (Amazon "estimated-monthly-storage-fee")
+    item_volume_cuft = db.Column(db.Float, nullable=True)         # per-unit cubic feet (for the modeled fallback)
+    units_aged = db.Column(db.Integer, nullable=True)            # units already past 181 days -> aged-inventory surcharge band
+
     created_at = db.Column(db.DateTime, default=db.func.current_timestamp())
     updated_at = db.Column(
         db.DateTime,

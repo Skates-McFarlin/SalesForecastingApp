@@ -64,6 +64,9 @@ def inventory_state(product):
         "Price": product.price,
         "MOQ": product.moq,
         "CasePack": product.case_pack,
+        "StorageFeeMonthly": product.fba_storage_fee_monthly,  # Amazon's real $/mo, if imported
+        "ItemVolumeCuft": product.item_volume_cuft,            # per-unit cu ft, for the modeled fallback
+        "UnitsAged": product.units_aged,                       # units already past 181 days
         "InventoryUpdatedAt": (
             product.inventory_updated_at.isoformat() if product.inventory_updated_at else None
         ),

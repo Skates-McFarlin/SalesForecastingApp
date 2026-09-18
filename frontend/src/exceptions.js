@@ -1,4 +1,5 @@
 import { reorder } from "./components/ui";
+import { fbaCarrying } from "./fba";
 
 // Phase 3 - the "what needs you" triage. Turns each SKU's forecast + inventory
 // state into at most one actionable exception, ranked by urgency. Pure
@@ -132,18 +133,30 @@ export function deriveExceptions(rows, settings, z, reliability = null) {
       });
     }
 
-    // Sitting on far more than the reorder cycle needs - cash tied up.
+    // Sitting on far more than the reorder cycle needs - cash tied up, and for
+    // an FBA seller, a monthly storage bleed plus aged-inventory surcharge risk.
     if (d.hasInventory && d.coverDays != null && d.coverDays >= OVERSTOCK_DAYS && d.order === 0) {
       const cash = capVal != null ? d.position * capVal : null;
+      const fba = fbaCarrying(row, num(row.DailyRate), d.coverDays);
+      const bits = [`${Math.round(d.coverDays)}d of cover`];
+      if (cash) bits.push(`~$${fmt(cash)} tied up`);
+      if (fba.monthlyFee) {
+        bits.push(`~$${fmt(fba.monthlyFee)}/mo Amazon fees${fba.modeled ? " est" : ""}`);
+      }
+      if (fba.aged) bits.push(`${fmt(fba.aged.units)} unit${fba.aged.units === 1 ? "" : "s"} aging past 181d`);
       candidates.push({
         type: "overstock",
-        severity: d.coverDays >= OVERSTOCK_DAYS * 2 ? "medium" : "low",
+        // A fee-bleeding or already-aging pile is worse than a cheap-to-hold one.
+        severity: d.coverDays >= OVERSTOCK_DAYS * 2 || fba.aged ? "medium" : "low",
         tprio: 0,
         title: "Overstocked",
-        detail: `${Math.round(d.coverDays)}d of cover${cash ? ` · ~$${fmt(cash)} tied up` : ""}`,
-        action: "Pause ordering; consider a promotion",
+        detail: bits.join(" · "),
+        action: fba.aged
+          ? "Sell through or remove before the surcharge; pause ordering"
+          : "Pause ordering; consider a promotion",
         magnitude: cash || d.position,
         impactUsd: cash,   // capital tied up in excess stock
+        feeUsd: fba.monthlyFee,   // monthly FBA carrying bleed (storage + aged surcharge)
       });
     }
 
@@ -161,6 +174,12 @@ export function deriveExceptions(rows, settings, z, reliability = null) {
     const w = chosen.type === "surge" ? surgeWeight
       : chosen.type === "collapse" ? collapseWeight : 1;
     chosen.rankUsd = chosen.impactUsd != null ? chosen.impactUsd * w : null;
+    // Overstock also ranks on its fee bleed: a year of Amazon carrying cost is
+    // real money lost (unlike tied-up capital, which is recoverable on sell-through),
+    // so a fee-heavy pile should float above a cheap-to-hold one.
+    if (chosen.type === "overstock" && chosen.feeUsd) {
+      chosen.rankUsd = (chosen.rankUsd || 0) + 12 * chosen.feeUsd;
+    }
     items.push({ key, name: row.ProductName, sku: row.Sku, category: row.Category, ...chosen });
   }
 

@@ -52,7 +52,23 @@ _ALIASES = {
                   "lead time days", "leadtime"],
     "lead_p90": ["lead p90", "lead slow", "slow lead", "lead time slow",
                  "lead time p90", "worst lead", "lead time (slow)"],
+    # Amazon FBA fee reports (Storage Fees, FBA Inventory Age). Present only when
+    # the seller imports those reports; they carry Amazon's own computed numbers.
+    "storage_fee": ["estimated-monthly-storage-fee", "estimated monthly storage fee",
+                    "monthly-storage-fee", "estimated_monthly_storage_fee"],
+    "item_volume": ["item-volume", "item volume", "volume", "measurement-units-volume"],
 }
+
+# FBA Inventory Age report columns for units in an aged-surcharge band (181+ days
+# in the warehouse). Summed into a single "already aging" count. Matched by the
+# starting day of the band, so future Amazon band splits still register.
+def _aged_columns(headers):
+    aged = []
+    for h in headers:
+        m = re.match(r"inv-age-(\d+)", h.strip().lower())
+        if m and int(m.group(1)) >= 181:
+            aged.append(h)
+    return aged
 
 
 def _resolve_columns(headers):
@@ -107,18 +123,24 @@ def _to_price(value):
         return None
 
 
-def _capture_inventory(rows, col):
-    """Pull per-product inventory fields (on-hand, unit cost, lead time) out of a
-    file that carries them - a POS/inventory export usually has on-hand and cost.
-    Returns {product key: {on_hand, unit_cost, lead_time_days}} with the last
-    non-empty value seen per product (these repeat per row in a long feed)."""
-    if not any(k in col for k in ("on_hand", "unit_cost", "lead_time", "price", "lead_p90")):
+def _capture_inventory(rows, col, headers=()):
+    """Pull per-product inventory & FBA-fee fields (on-hand, unit cost, lead time,
+    Amazon storage fee / item volume / aged-unit count) out of a file that carries
+    them - a POS/inventory export or an Amazon FBA report. Returns {product key:
+    {model field: value}} with the last non-empty value seen per product (these
+    repeat per row in a long feed)."""
+    aged_cols = _aged_columns(headers)
+    if not aged_cols and not any(
+        k in col for k in ("on_hand", "unit_cost", "lead_time", "price", "lead_p90",
+                           "storage_fee", "item_volume")):
         return {}
     casters = {"on_hand": float, "unit_cost": float, "price": float,
                "lead_time_days": lambda x: int(float(x)),
-               "lead_time_p90_days": lambda x: int(float(x))}
+               "lead_time_p90_days": lambda x: int(float(x)),
+               "fba_storage_fee_monthly": float, "item_volume_cuft": float}
     src = {"on_hand": "on_hand", "unit_cost": "unit_cost", "price": "price",
-           "lead_time_days": "lead_time", "lead_time_p90_days": "lead_p90"}
+           "lead_time_days": "lead_time", "lead_time_p90_days": "lead_p90",
+           "fba_storage_fee_monthly": "storage_fee", "item_volume_cuft": "item_volume"}
     out = {}
     for row in rows:
         name = (row.get(col.get("name", ""), "") or "").strip()
@@ -135,6 +157,14 @@ def _capture_inventory(rows, col):
                         vals[field] = casters[field](raw)
                     except (ValueError, TypeError):
                         pass
+        if aged_cols:  # sum the 181+ day bands into one "already aging" count
+            aged = 0
+            for h in aged_cols:
+                try:
+                    aged += int(float(row.get(h, 0) or 0))
+                except (ValueError, TypeError):
+                    pass
+            vals["units_aged"] = aged
         if vals:
             out[key] = vals
     return out
@@ -151,7 +181,7 @@ def import_sales(file):
     """
     rows, headers = _read_rows(file)
     col = _resolve_columns(headers)
-    inv_by_key = _capture_inventory(rows, col)  # on-hand/cost/lead-time if present
+    inv_by_key = _capture_inventory(rows, col, headers)  # on-hand/cost/lead/FBA-fees if present
     has_wide = any(re.match(r"Quantity Sold \w+ \d{4}", h) for h in headers)
     if "date" in col and "qty" in col:  # a long/transactional (daily) feed
         json_data, extra_context_by_group = _long_to_json(rows, headers)
