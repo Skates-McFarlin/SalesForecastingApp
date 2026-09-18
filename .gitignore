@@ -6,6 +6,9 @@ backend/instance/
 backend/build/
 backend/dist/
 backend/*.spec
+# run.spec is hand-maintained (custom collect_all for the forecasting stack +
+# pkg_resources' jaraco/platformdirs deps) - it must be tracked, not ignored.
+!backend/run.spec
 electron/node_modules/
 electron/dist/
 electron/dist-electron/
