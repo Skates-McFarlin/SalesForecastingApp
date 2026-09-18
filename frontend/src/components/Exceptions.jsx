@@ -33,6 +33,8 @@ export default function Exceptions({ rows, settings, service, onInventoryResult,
   // The signal layer's realized reliability, used to discount speculative
   // demand-move flags when ranking (grounded stockouts keep full weight).
   const [reliability, setReliability] = useState(null);
+  // Which summary card is filtering the list (an exception type), or null for all.
+  const [filter, setFilter] = useState(null);
   useEffect(() => {
     let live = true;
     fetchSignalReliability().then((r) => live && setReliability(r)).catch(() => {});
@@ -50,6 +52,13 @@ export default function Exceptions({ rows, settings, service, onInventoryResult,
     { key: "surge", label: "Demand shift", n: (byType.surge || 0) + (byType.collapse || 0), tone: "text-[var(--ink)]", dot: "bg-accent-500" },
     { key: "overstock", label: "Overstock", n: byType.overstock || 0, tone: "text-[var(--ink)]", dot: "bg-amber-400" },
   ];
+
+  // Each summary card filters the list to its exception type(s) - the "Demand
+  // shift" card covers both a surge and a collapse. Clicking the active card (or
+  // "Show all") clears the filter.
+  const TYPES_FOR = { stockout: ["stockout"], overdue: ["overdue"], surge: ["surge", "collapse"], overstock: ["overstock"] };
+  const shown = filter ? items.filter((it) => TYPES_FOR[filter].includes(it.type)) : items;
+  const activeLabel = filter ? summary.find((s) => s.key === filter)?.label : null;
 
   return (
     <div className="flex flex-col gap-6">
@@ -80,20 +89,31 @@ export default function Exceptions({ rows, settings, service, onInventoryResult,
 
       {total > 0 && (
         <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-          {summary.map((s) => (
-            <div
-              key={s.key}
-              className="rounded-xl border border-[var(--line)] bg-[var(--surface)] p-3.5 [box-shadow:var(--shadow-sm)]"
-            >
-              <div className="flex items-center justify-between">
-                <SectionLabel>{s.label}</SectionLabel>
-                <span className={`size-1.5 rounded-full ${s.n ? s.dot : "bg-[var(--line-strong)]"}`} aria-hidden="true" />
-              </div>
-              <div className={`tnum mt-1.5 text-[26px] font-bold leading-none ${s.n ? s.tone : "text-[var(--ink-3)]"}`}>
-                {formatNumber(s.n)}
-              </div>
-            </div>
-          ))}
+          {summary.map((s) => {
+            const active = filter === s.key;
+            const clickable = s.n > 0;
+            return (
+              <button
+                key={s.key}
+                type="button"
+                disabled={!clickable}
+                aria-pressed={active}
+                onClick={() => setFilter((f) => (f === s.key ? null : s.key))}
+                title={clickable ? (active ? `Show all — clear ${s.label} filter` : `Show only ${s.label}`) : undefined}
+                className={`rounded-xl border bg-[var(--surface)] p-3.5 text-left [box-shadow:var(--shadow-sm)] transition-colors ${
+                  active ? "border-accent-500/60 ring-2 ring-accent-500/40" : "border-[var(--line)]"
+                } ${clickable ? "cursor-pointer hover:border-[var(--line-strong)] hover:bg-[var(--surface-2)]" : "cursor-default"}`}
+              >
+                <div className="flex items-center justify-between">
+                  <SectionLabel>{s.label}</SectionLabel>
+                  <span className={`size-1.5 rounded-full ${s.n ? s.dot : "bg-[var(--line-strong)]"}`} aria-hidden="true" />
+                </div>
+                <div className={`tnum mt-1.5 text-[26px] font-bold leading-none ${s.n ? s.tone : "text-[var(--ink-3)]"}`}>
+                  {formatNumber(s.n)}
+                </div>
+              </button>
+            );
+          })}
         </div>
       )}
 
@@ -110,10 +130,33 @@ export default function Exceptions({ rows, settings, service, onInventoryResult,
           </p>
         </div>
       ) : (
-        <div className="overflow-hidden rounded-2xl border border-[var(--line)] bg-[var(--surface)] [box-shadow:var(--shadow-sm)]">
-          {items.map((it, i) => (
-            <ExceptionRow key={it.key} it={it} first={i === 0} onInventoryResult={onInventoryResult} onOpenSku={onOpenSku} />
-          ))}
+        <div className="flex flex-col gap-2.5">
+          {filter && (
+            <div className="flex items-center justify-between px-0.5 text-sm">
+              <span className="text-[var(--ink-2)]">
+                Showing <span className="font-semibold text-[var(--ink)]">{activeLabel}</span>
+                <span className="text-[var(--ink-3)]"> · {formatNumber(shown.length)} of {formatNumber(total)}</span>
+              </span>
+              <button
+                type="button"
+                onClick={() => setFilter(null)}
+                className="font-medium text-accent-600 underline-offset-2 hover:underline dark:text-accent-400"
+              >
+                Show all
+              </button>
+            </div>
+          )}
+          {shown.length > 0 ? (
+            <div className="overflow-hidden rounded-2xl border border-[var(--line)] bg-[var(--surface)] [box-shadow:var(--shadow-sm)]">
+              {shown.map((it, i) => (
+                <ExceptionRow key={it.key} it={it} first={i === 0} onInventoryResult={onInventoryResult} onOpenSku={onOpenSku} />
+              ))}
+            </div>
+          ) : (
+            <div className="rounded-2xl border border-[var(--line)] bg-[var(--surface)] p-8 text-center text-sm text-[var(--ink-2)] [box-shadow:var(--shadow-sm)]">
+              No {activeLabel?.toLowerCase()} items right now.
+            </div>
+          )}
         </div>
       )}
 
