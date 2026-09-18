@@ -49,6 +49,16 @@ function resolveProducts(question, rows, settings, z) {
       .slice(0, 3)
       .forEach((x) => add(x.r));
   }
+  // A plain "what should I reorder / restock / buy now" with no product named ->
+  // the top reorder-now SKUs by order size, so the answer is a concrete list of
+  // what to order (not just "36 products need reorder").
+  if (!out.length && /\b(reorder|re-order|restock|replenish|order now|need(s)? ordering)\b/i.test(q)) {
+    rows.map((r) => ({ r, d: reorder(r, settings, z) }))
+      .filter((x) => x.d.hasInventory && x.d.reorderNow && x.d.order > 0)
+      .sort((a, b) => b.d.order - a.d.order)
+      .slice(0, 4)
+      .forEach((x) => add(x.r));
+  }
   return out.slice(0, 4);
 }
 

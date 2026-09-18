@@ -1548,11 +1548,28 @@ def _error_metrics_core(json_data, extra_context_by_group, start_date, duration,
                 "Error Metrics": {
                     "MAE": float(round(mae, 2)),
                     "RMSE": float(round(rmse, 2)),
-                    "MAPE": f"{float(round(mape, 2))}%",
+                    # NaN (a SKU with no scoreable actuals in the window) must not
+                    # reach the JSON as a "nan%" string - keep it null.
+                    "MAPE": f"{float(round(mape, 2))}%" if math.isfinite(mape) else None,
                     "MASE": mase,
                     "SeasonalNaiveMASE": sn_mase,
                     "BeatSeasonalNaive": beat_sn,
                 },
             }
         )
-    return json.dumps(error_results, indent=4)
+    # json.dumps emits a bare NaN by default, which is invalid JSON that the
+    # browser's JSON.parse rejects (Python's json.loads quietly accepts it, so it
+    # only shows up in the app) - scrub every non-finite float to null first.
+    return json.dumps(_json_safe(error_results), indent=4)
+
+
+def _json_safe(o):
+    """Recursively replace non-finite floats (NaN/inf) with None so the result is
+    valid JSON every parser accepts."""
+    if isinstance(o, float):
+        return o if math.isfinite(o) else None
+    if isinstance(o, dict):
+        return {k: _json_safe(v) for k, v in o.items()}
+    if isinstance(o, (list, tuple)):
+        return [_json_safe(v) for v in o]
+    return o

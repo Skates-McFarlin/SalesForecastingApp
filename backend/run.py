@@ -32,4 +32,8 @@ if __name__ == "__main__":
             file=sys.stderr,
         )
         sys.exit(1)
-    app.run(host=HOST, port=PORT, debug=False)
+    # threaded=True so a long request (a catalog scan or an out-of-sample
+    # backtest can run tens of seconds) doesn't block - or reset - every other
+    # request the UI makes in the meantime. The heavy work is GIL-bound Python so
+    # this doesn't parallelize the compute; it just keeps the server responsive.
+    app.run(host=HOST, port=PORT, debug=False, threaded=True)

@@ -115,10 +115,18 @@ export default function App() {
   };
 
   const runAccuracy = async () => {
-    if (!hasCatalog || !dataRange) return;
+    if (!hasCatalog || !catalog?.date_to) return;
     setAccuracy({ rows: null, error: null, busy: true });
     try {
-      const start = `${dataRange.min_year}-${String(dataRange.min_month).padStart(2, "0")}-01`;
+      // Honest hold-out backtest: cut the last `horizon` periods off the edge,
+      // train on everything before that cutoff, then score the model's forecast
+      // for those periods against what actually sold. (Training on data before
+      // the catalog's FIRST date - the old wiring - trained on nothing and
+      // silently scored zero products.)
+      const cutoff = new Date(`${catalog.date_to}T00:00:00`);
+      if (grain === "weekly") cutoff.setDate(cutoff.getDate() - horizon * 7);
+      else cutoff.setMonth(cutoff.getMonth() - horizon);
+      const start = cutoff.toISOString().slice(0, 10);
       const rows = await scoreCatalogAccuracy(start, horizon);
       setAccuracy({ rows, error: null, busy: false });
     } catch (err) {
@@ -483,7 +491,7 @@ function ImportPanel({ importing, onImport, onReject, rangeLabel, products }) {
   const [file, setFile] = useState(null);
   return (
     <div className="flex flex-col gap-3.5">
-      {products != null ? (
+      {products > 0 ? (
         <p className="text-sm text-[var(--ink-2)]">
           Your catalog has <b className="text-[var(--ink)]">{formatNumber(products)}</b> products{rangeLabel ? ` (${rangeLabel})` : ""}. Drop another export — newer sales, stock, fees, or costs — and it merges in. The app re-scans automatically.
         </p>

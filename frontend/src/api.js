@@ -4,14 +4,21 @@
 const BASE = "http://127.0.0.1:5000";
 
 async function asJson(res) {
+  const text = await res.text();
   let body = null;
-  try {
-    body = await res.json();
-  } catch {
-    // fall through to a status-based message below
+  let parseFailed = false;
+  if (text) {
+    try {
+      body = JSON.parse(text);
+    } catch {
+      parseFailed = true; // e.g. a NaN slipped into the JSON - don't fail silently
+    }
   }
   if (!res.ok) {
     throw new Error(body?.error || `Request failed (${res.status})`);
+  }
+  if (parseFailed) {
+    throw new Error(`Couldn't read the server's response (${res.status}).`);
   }
   return body;
 }
