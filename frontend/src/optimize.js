@@ -56,6 +56,12 @@ function expShortage(y, mu, sigma) {
   return sigma * (normPdf(k) - k * (1 - normCdf(k)));
 }
 
+// Amazon exports never carry COGS (Amazon doesn't know what you paid). When a
+// SKU has a selling price but no cost, estimate cost as this fraction of price so
+// the buy plan isn't empty right after a pure-Amazon import - clearly flagged in
+// the UI, and superseded the instant real costs are imported or typed.
+const COST_FROM_PRICE = 0.5;
+
 // Order-up-to for a SKU at combined shadow prices: fund a unit while its
 // marginal value 1-F(y) still clears lamCash*cost + lamVol*size.
 function targetY(it, lamCash, lamVol = 0) {
@@ -94,13 +100,22 @@ export function optimizeBudget(rows, settings, z, budget, capacity = Infinity) {
 
   for (const row of rows || []) {
     const d = reorder(row, settings, z);
-    const cost = Number(row.UnitCost);
+    let cost = Number(row.UnitCost);
+    let costEstimated = false;
     const r = Number(row.DailyRate || 0);
     const s = Number(row.DailySigma || 0);
     if (r <= 0) continue;
     if (!(cost > 0)) {
-      if (d.order > 0) noCost += 1; // wants an order but we can't price it
-      continue;
+      // No COGS (an Amazon import). Fall back to an estimate from the selling
+      // price so this SKU still gets planned; skip only if we have no price either.
+      const price = Number(row.Price);
+      if (price > 0) {
+        cost = price * COST_FROM_PRICE;
+        costEstimated = true;
+      } else {
+        if (d.order > 0) noCost += 1; // wants an order but we can't price it at all
+        continue;
+      }
     }
     const P = d.leadTimeDays + R;
     const mu = r * P;
@@ -114,7 +129,7 @@ export function optimizeBudget(rows, settings, z, budget, capacity = Infinity) {
     const ideal = Math.max(0, S - q0);
     if (ideal <= 0) continue; // already covered - no order needed
     const vol = Math.max(0, Number(row.ItemVolumeCuft) || 0);
-    items.push({ key: row.Sku || row.ProductName, name: row.ProductName, sku: row.Sku, cost, mu, sigma, q0, S, ideal, vol });
+    items.push({ key: row.Sku || row.ProductName, name: row.ProductName, sku: row.Sku, cost, costEstimated, mu, sigma, q0, S, ideal, vol });
   }
 
   const cap = capacityBasis(items); // assigns it.size (cu ft or units per unit)
@@ -162,13 +177,14 @@ export function optimizeBudget(rows, settings, z, budget, capacity = Infinity) {
   }
 
   let allocatedSpend = 0, allocatedVol = 0, shortAfter = 0, shortFull = 0, shortNone = 0, muTot = 0;
-  let funded = 0, partial = 0, unfunded = 0;
+  let funded = 0, partial = 0, unfunded = 0, estimatedCount = 0;
   const out = items.map((it, i) => {
     const allocated = Math.max(0, Math.round(ys[i] - it.q0));
     const spend = allocated * it.cost;
     allocatedSpend += spend;
     allocatedVol += allocated * it.size;
     muTot += it.mu;
+    if (it.costEstimated) estimatedCount += 1;
     shortAfter += expShortage(it.q0 + allocated, it.mu, it.sigma);
     shortFull += expShortage(it.S, it.mu, it.sigma);
     shortNone += expShortage(it.q0, it.mu, it.sigma);
@@ -177,7 +193,7 @@ export function optimizeBudget(rows, settings, z, budget, capacity = Infinity) {
     if (status === "funded") funded += 1;
     else if (status === "partial") partial += 1;
     else unfunded += 1;
-    return { key: it.key, name: it.name, sku: it.sku, cost: it.cost, ideal: idealRound, allocated, spend, status };
+    return { key: it.key, name: it.name, sku: it.sku, cost: it.cost, costEstimated: it.costEstimated, ideal: idealRound, allocated, spend, status };
   });
 
   out.sort((a, b) => b.spend - a.spend || b.ideal - a.ideal);
@@ -194,6 +210,8 @@ export function optimizeBudget(rows, settings, z, budget, capacity = Infinity) {
     serviceIfNone: fill(shortNone),
     counts: { funded, partial, unfunded },
     noCost,
+    estimatedCount, // SKUs whose cost was estimated from price (no COGS imported)
+    costRatio: COST_FROM_PRICE,
     binding: budget < idealCost,
     // FBA restock/capacity constraint (Amazon Capacity Manager).
     capacity,

@@ -72,8 +72,9 @@ export default function OrderPlan({ rows, settings, service, onInventoryResult, 
   if (!ideal && openOrders.length === 0) {
     return (
       <Card className="p-10 text-center text-sm text-[var(--ink-2)]">
-        Nothing to buy right now — every product with a unit cost is already covered for its
-        lead time. Set unit costs and on-hand on the Forecast tab to plan a budgeted buy.
+        Nothing to buy right now — everything priced is already covered for its lead time.
+        If products are missing, import a sheet with on-hand (and ideally SKU + Unit Cost)
+        columns, or set them on the Forecast tab, to plan a budgeted buy.
       </Card>
     );
   }
@@ -200,12 +201,24 @@ export default function OrderPlan({ rows, settings, service, onInventoryResult, 
         </Button>
       </div>
 
+      {plan.estimatedCount > 0 && (
+        <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-amber-300/60 bg-amber-50 px-4 py-3 text-xs dark:border-amber-400/25 dark:bg-amber-400/10">
+          <span className="text-[var(--ink-2)]">
+            <span className="font-semibold text-amber-700 dark:text-amber-400">{formatNumber(plan.estimatedCount)} product{plan.estimatedCount === 1 ? "" : "s"}</span> use an estimated cost
+            ({Math.round(plan.costRatio * 100)}% of price) — Amazon exports don’t include your COGS.
+          </span>
+          <span className="text-[var(--ink-3)]">
+            Import a sheet with <span className="tnum">SKU</span> + <span className="tnum">Unit Cost</span> columns to use real costs.
+          </span>
+        </div>
+      )}
+
       <div>
         <div className="mb-2 flex items-center justify-between">
           <SectionLabel>Allocation by product</SectionLabel>
           {plan.noCost > 0 && (
             <span className="text-[11px] text-[var(--ink-3)]">
-              {formatNumber(plan.noCost)} product{plan.noCost === 1 ? "" : "s"} excluded (no unit cost)
+              {formatNumber(plan.noCost)} product{plan.noCost === 1 ? "" : "s"} excluded (no price or cost)
             </span>
           )}
         </div>
@@ -230,7 +243,10 @@ export default function OrderPlan({ rows, settings, service, onInventoryResult, 
                     <div className="font-medium">{it.name}</div>
                     {it.sku && <div className="tnum text-[11px] text-[var(--ink-3)]">{it.sku}</div>}
                   </td>
-                  <td className="tnum px-3 py-2 text-right text-[var(--ink-2)]">{money(it.cost)}</td>
+                  <td className="tnum px-3 py-2 text-right text-[var(--ink-2)]">
+                    {money(it.cost)}
+                    {it.costEstimated && <span className="ml-1 text-[10px] text-amber-600 dark:text-amber-400" title="Estimated from price - no COGS imported">est</span>}
+                  </td>
                   <td className="tnum px-3 py-2 text-right text-[var(--ink-2)]">{formatNumber(it.ideal)}</td>
                   <td className="tnum px-3 py-2 text-right font-medium">{formatNumber(it.allocated)}</td>
                   <td className="tnum px-3 py-2 text-right text-accent-600 dark:text-accent-400">{money(it.spend)}</td>
