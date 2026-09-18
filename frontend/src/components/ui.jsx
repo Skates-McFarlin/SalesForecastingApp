@@ -238,7 +238,7 @@ function countQuantile(tau, mean, varr) {
 }
 
 // Round a raw order up to the case pack, then up to the minimum order quantity.
-function snapOrder(qty, moq, casePack) {
+export function snapOrder(qty, moq, casePack) {
   if (qty <= 0) return 0;
   if (casePack && casePack > 0) qty = Math.ceil(qty / casePack) * casePack;
   if (moq && qty < moq) {

@@ -1,4 +1,4 @@
-import { reorder } from "./components/ui";
+import { reorder, snapOrder } from "./components/ui";
 
 // Phase 4 - budget-constrained buy across the whole catalog. The forecast is now
 // an INPUT: given a cash budget, allocate it to maximize expected service, using
@@ -54,6 +54,31 @@ function normInv(p) {
 function expShortage(y, mu, sigma) {
   const k = (y - mu) / sigma;
   return sigma * (normPdf(k) - k * (1 - normCdf(k)));
+}
+
+// Largest ORDERABLE quantity <= raw: a case-pack multiple that still meets the
+// minimum order, else 0 (can't reach the minimum without exceeding what the
+// budget allocated). Snapping down guarantees we never blow past the cap.
+function snapDownOrder(raw, moq, cp) {
+  if (raw <= 0) return 0;
+  const step = cp > 0 ? cp : 1;
+  const q = Math.floor(raw / step + 1e-9) * step;
+  if (moq && q < moq) return 0;
+  return q;
+}
+
+// The next feasible order increment for an item currently ordering `a` units:
+// the first unit jumps to the minimum order, then it climbs by whole case packs,
+// never past the item's full snapped need. Ranked by expected shortage reduced
+// per dollar, so leftover budget/capacity buys the most service.
+function nextIncrement(it, a) {
+  const step = it.cp > 0 ? it.cp : 1;
+  const to = a <= 0 ? it.minOrder : a + step;
+  if (to > it.full || to <= a) return null;
+  const add = to - a;
+  const y = it.q0 + a;
+  const gain = expShortage(y, it.mu, it.sigma) - expShortage(y + add, it.mu, it.sigma);
+  return { to, dCost: add * it.cost, dVol: add * it.size, density: gain / Math.max(1e-9, add * it.cost) };
 }
 
 // Amazon exports never carry COGS (Amazon doesn't know what you paid). When a
@@ -129,16 +154,26 @@ export function optimizeBudget(rows, settings, z, budget, capacity = Infinity) {
     const ideal = Math.max(0, S - q0);
     if (ideal <= 0) continue; // already covered - no order needed
     const vol = Math.max(0, Number(row.ItemVolumeCuft) || 0);
-    items.push({ key: row.Sku || row.ProductName, name: row.ProductName, sku: row.Sku, cost, costEstimated, mu, sigma, q0, S, ideal, vol });
+    const moq = Math.max(0, Number(row.MOQ) || 0);
+    const cp = Math.max(0, Number(row.CasePack) || 0);
+    // full = the full need made ORDERABLE (a case-pack multiple that meets MOQ) -
+    // the same snap the Forecast tab applies, so "Needed" here matches its
+    // "Suggested order". minOrder = the smallest legal order (first funded unit).
+    const full = Math.round(snapOrder(ideal, moq, cp));
+    const minOrder = Math.round(snapOrder(1, moq, cp));
+    items.push({ key: row.Sku || row.ProductName, name: row.ProductName, sku: row.Sku, cost, costEstimated, mu, sigma, q0, S, ideal, vol, moq, cp, full, minOrder });
   }
 
   const cap = capacityBasis(items); // assigns it.size (cu ft or units per unit)
-  const idealCost = items.reduce((a, it) => a + it.cost * it.ideal, 0);
-  const idealVol = items.reduce((a, it) => a + it.size * it.ideal, 0);
+  // Reference "full need" cost/volume uses the ORDERABLE (snapped) quantity, so
+  // it lines up with what the plan can actually buy.
+  const idealCost = items.reduce((a, it) => a + it.cost * it.full, 0);
+  const idealVol = items.reduce((a, it) => a + it.size * it.full, 0);
   const capped = Number.isFinite(capacity);
+  const covers = items.length === 0 || (budget >= idealCost && (!capped || capacity >= idealVol));
 
   let ys;
-  if (items.length === 0 || (budget >= idealCost && (!capped || capacity >= idealVol))) {
+  if (covers) {
     ys = items.map((it) => it.S); // both caps cover everything
   } else {
     const spendAt = (lc, lv) => items.reduce((a, it) => a + it.cost * (targetY(it, lc, lv) - it.q0), 0);
@@ -176,10 +211,35 @@ export function optimizeBudget(rows, settings, z, budget, capacity = Infinity) {
     ys = items.map((it) => targetY(it, lamCash, lamVol));
   }
 
+  // Turn the continuous water-fill target into an ORDERABLE plan: every line is a
+  // case-pack multiple that meets the SKU's minimum order, or zero. When both caps
+  // cover the catalog, order each SKU's full snapped need. When a cap binds, snap
+  // each order DOWN to a feasible quantity (so total spend/volume never exceeds the
+  // cap the user set) then spend the rounding remainder greedily on the highest
+  // service-per-dollar increments that still fit both caps.
+  const alloc = items.map((it, i) => (covers ? it.full : snapDownOrder(Math.max(0, ys[i] - it.q0), it.moq, it.cp)));
+  if (!covers) {
+    let remBudget = budget - alloc.reduce((s, a, i) => s + a * items[i].cost, 0);
+    let remCap = capacity - alloc.reduce((s, a, i) => s + a * items[i].size, 0);
+    let guard = items.length * 30 + 500; // safety bound; the loop exits when nothing fits
+    while (guard-- > 0) {
+      let bi = -1, best = null;
+      for (let i = 0; i < items.length; i++) {
+        const inc = nextIncrement(items[i], alloc[i]);
+        if (!inc || inc.dCost > remBudget + 1e-6 || inc.dVol > remCap + 1e-6) continue;
+        if (!best || inc.density > best.density) { bi = i; best = inc; }
+      }
+      if (bi < 0) break;
+      alloc[bi] = best.to;
+      remBudget -= best.dCost;
+      remCap -= best.dVol;
+    }
+  }
+
   let allocatedSpend = 0, allocatedVol = 0, shortAfter = 0, shortFull = 0, shortNone = 0, muTot = 0;
   let funded = 0, partial = 0, unfunded = 0, estimatedCount = 0;
   const out = items.map((it, i) => {
-    const allocated = Math.max(0, Math.round(ys[i] - it.q0));
+    const allocated = alloc[i];
     const spend = allocated * it.cost;
     allocatedSpend += spend;
     allocatedVol += allocated * it.size;
@@ -188,12 +248,11 @@ export function optimizeBudget(rows, settings, z, budget, capacity = Infinity) {
     shortAfter += expShortage(it.q0 + allocated, it.mu, it.sigma);
     shortFull += expShortage(it.S, it.mu, it.sigma);
     shortNone += expShortage(it.q0, it.mu, it.sigma);
-    const idealRound = Math.round(it.ideal);
-    const status = allocated <= 0 ? "unfunded" : allocated >= idealRound ? "funded" : "partial";
+    const status = allocated <= 0 ? "unfunded" : allocated >= it.full ? "funded" : "partial";
     if (status === "funded") funded += 1;
     else if (status === "partial") partial += 1;
     else unfunded += 1;
-    return { key: it.key, name: it.name, sku: it.sku, cost: it.cost, costEstimated: it.costEstimated, ideal: idealRound, allocated, spend, status };
+    return { key: it.key, name: it.name, sku: it.sku, cost: it.cost, costEstimated: it.costEstimated, ideal: it.full, allocated, spend, status };
   });
 
   out.sort((a, b) => b.spend - a.spend || b.ideal - a.ideal);
