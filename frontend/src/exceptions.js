@@ -24,15 +24,16 @@ function pctChange(row) {
 }
 
 // Per-unit economics: margin when both price and cost are known, plus the raw
-// cost. Business-impact ranks on DOLLARS, not units - a stockout on a $2 item and
-// a $200 item are not the same problem. Falls back gracefully: margin -> cost ->
-// (nothing, so those items rank by urgency at the bottom).
+// cost and price. Business-impact ranks on DOLLARS, not units - a stockout on a
+// $2 item and a $200 item are not the same problem. Falls back gracefully:
+// margin -> cost -> price (revenue at risk, when a file carries selling prices
+// but no cost) -> nothing (those items rank by urgency at the bottom).
 function perUnit(row) {
   const price = Number(row.Price), cost = Number(row.UnitCost);
   const hasP = row.Price != null && !Number.isNaN(price) && price > 0;
   const hasC = row.UnitCost != null && !Number.isNaN(cost) && cost > 0;
   const margin = hasP && hasC && price > cost ? price - cost : null;
-  return { margin, cost: hasC ? cost : null };
+  return { margin, cost: hasC ? cost : null, price: hasP ? price : null };
 }
 function money(n) {
   return n == null ? null : `$${Math.round(n).toLocaleString()}`;
@@ -67,8 +68,8 @@ export function deriveExceptions(rows, settings, z, reliability = null) {
     if (!d.hasInventory) missingStock += 1;
 
     const pu = perUnit(row);
-    const lostVal = pu.margin != null ? pu.margin : pu.cost; // $/unit of not supplying
-    const capVal = pu.cost != null ? pu.cost : pu.margin;    // $/unit of capital exposure
+    const lostVal = pu.margin ?? pu.cost ?? pu.price; // $/unit of not supplying (margin > cost > revenue)
+    const capVal = pu.cost ?? pu.price ?? pu.margin;  // $/unit of capital exposure
     const candidates = [];
 
     // A purchase order whose expected arrival has passed.

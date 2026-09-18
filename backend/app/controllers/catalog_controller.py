@@ -214,6 +214,20 @@ def import_sales(file):
                     record.unit_price = price
                 stats["records_updated"] += 1
 
+        # Give the product a single representative selling price for the money
+        # views (dollars at risk, margin) when the file carried per-period unit
+        # prices ("Unit Price {Mon} {Year}") but no standalone price column. Take
+        # the most recent priced period; an explicit price column (via inventory
+        # capture above) always wins and is left untouched.
+        if product.price is None:
+            priced = [
+                _to_price(r.get("price"))
+                for r in sorted(rows, key=lambda x: x.get("ds", ""))
+            ]
+            priced = [p for p in priced if p is not None]
+            if priced:
+                product.price = priced[-1]
+
     db.session.commit()
 
     if all_dates:

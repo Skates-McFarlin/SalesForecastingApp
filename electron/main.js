@@ -98,13 +98,47 @@ function waitForBackend(timeoutMs, onStatus) {
     });
 }
 
+// The startup screen the user sees while the backend spins up. It renders before
+// the app (and before any network), so it must be fully self-contained: no web
+// fonts, no external assets. The Insighta mark is inlined; the wordmark uses a
+// serif fallback to echo the app's editorial Fraunces without a font download.
 function loadingHtml(message) {
     return 'data:text/html;charset=utf-8,' + encodeURIComponent(`
         <html>
-        <body style="display:flex;align-items:center;justify-content:center;height:100vh;margin:0;
-                     font-family:system-ui,-apple-system,sans-serif;background:#1e1e2e;color:#cdd6f4;">
-            <div style="text-align:center;">
-                <div>${message}</div>
+        <head><meta charset="utf-8"><style>
+            @keyframes spin { to { transform: rotate(360deg); } }
+            @keyframes rise { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+            :root { color-scheme: light; }
+            html, body { height: 100%; }
+            body {
+                margin: 0; display: flex; align-items: center; justify-content: center;
+                background: #f4f2ee; color: #1b1a17;
+                font-family: "Hanken Grotesk", system-ui, -apple-system, "Segoe UI", sans-serif;
+                -webkit-font-smoothing: antialiased;
+            }
+            .wrap { text-align: center; animation: rise .4s cubic-bezier(.2,.7,.2,1) both; }
+            .mark { width: 60px; height: 60px; }
+            .word {
+                margin-top: 18px; font-family: Georgia, "Times New Roman", serif;
+                font-weight: 500; font-size: 30px; letter-spacing: -.01em; color: #1b1a17;
+            }
+            .row { margin-top: 22px; display: flex; align-items: center; justify-content: center; gap: 10px; }
+            .spinner {
+                width: 15px; height: 15px; border-radius: 50%;
+                border: 2px solid rgba(31,107,79,.22); border-top-color: #1f6b4f;
+                animation: spin .8s linear infinite;
+            }
+            .msg { font-size: 13.5px; color: #57534b; max-width: 320px; }
+        </style></head>
+        <body>
+            <div class="wrap">
+                <svg class="mark" viewBox="0 0 28 28" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    <rect width="28" height="28" rx="8" fill="#1f6b4f"/>
+                    <path d="M6 18.5 10.5 13.5 13.7 16.5 18.7 9.5" stroke="white" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+                    <circle cx="19.4" cy="8.9" r="1.7" fill="white"/>
+                </svg>
+                <div class="word">Insighta</div>
+                <div class="row"><div class="spinner"></div><div class="msg">${message}</div></div>
             </div>
         </body>
         </html>
