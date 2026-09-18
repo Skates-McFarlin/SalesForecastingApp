@@ -197,7 +197,7 @@ export default function App() {
       </main>
 
       {showImport && (
-        <Modal title="Sync sales" onClose={() => setShowImport(false)}>
+        <Modal title="Import data" onClose={() => setShowImport(false)}>
           <ImportPanel importing={importing} onImport={doImport} onReject={(m) => setForecast((s) => ({ ...s, error: m }))} rangeLabel={rangeLabel} products={catalog?.products} />
         </Modal>
       )}
@@ -240,13 +240,16 @@ function TopBar({ view, onView, hasCatalog, products, rangeLabel, onSync, onSett
       </nav>
       <div className="ml-auto flex items-center gap-2.5">
         {hasCatalog && (
-          <button onClick={onSync} title="Sync new sales"
-            className="hidden items-center gap-2 rounded-full border border-[var(--line)] px-3 py-1.5 text-xs font-semibold text-[var(--ink-2)] transition-colors hover:bg-[var(--surface-2)] md:inline-flex">
+          <button onClick={onSync} title="Import or sync data"
+            className="hidden items-center gap-2 rounded-full border border-[var(--line)] px-3 py-1.5 text-xs font-semibold text-[var(--ink-2)] transition-colors hover:border-accent-500 hover:bg-[var(--surface-2)] md:inline-flex">
             <span className="size-1.5 rounded-full bg-pos-500" />
             <span className="tnum">{formatNumber(products)}</span> products
             {rangeLabel && <span className="text-[var(--ink-3)]">· {rangeLabel}</span>}
           </button>
         )}
+        <IconBtn onClick={onSync} title="Import data" label="Import data">
+          <svg viewBox="0 0 20 20" fill="none"><path d="M10 13V3m0 0L6.5 6.5M10 3l3.5 3.5" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" /><path d="M3.5 12.5v3a1.5 1.5 0 0 0 1.5 1.5h10a1.5 1.5 0 0 0 1.5-1.5v-3" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" /></svg>
+        </IconBtn>
         <IconBtn onClick={onSettings} title="Settings" label="Settings">
           <svg viewBox="0 0 20 20" fill="none"><circle cx="10" cy="10" r="2.6" stroke="currentColor" strokeWidth="1.6" /><path d="M10 2.6v2.1M10 15.3v2.1M17.4 10h-2.1M4.7 10H2.6M15.2 4.8l-1.5 1.5M6.3 13.7l-1.5 1.5M15.2 15.2l-1.5-1.5M6.3 6.3 4.8 4.8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" /></svg>
         </IconBtn>
@@ -372,12 +375,26 @@ function TrackView({ trackView, setTrackView, accuracy, ledgerToken, onRunBackte
         <TodaySkeleton />
       ) : accuracy.rows?.length ? (
         <AccuracyResults rows={accuracy.rows} />
+      ) : accuracy.error ? (
+        <BacktestPrompt onRun={onRunBacktest} cta="Try again"
+          msg={<span className="text-neg-500 dark:text-neg-400">Backtest failed: {accuracy.error}</span>} />
+      ) : accuracy.rows ? (
+        // Ran, but nothing was scoreable (rows === []): usually too little history.
+        <BacktestPrompt onRun={onRunBacktest} cta="Run again"
+          msg="Not enough history to backtest yet — each product needs enough past periods to hold some out and score against. Import a longer sales history (e.g. a wider Amazon Orders date range) and try again." />
       ) : (
-        <div className="flex flex-col items-center gap-3 rounded-2xl border border-[var(--line)] bg-[var(--surface)] p-12 text-center">
-          <p className="max-w-sm text-sm text-[var(--ink-2)]">Score the model against what actually happened in your history — an honest, out-of-sample backtest.</p>
-          <Button onClick={onRunBacktest}>Run backtest</Button>
-        </div>
+        <BacktestPrompt onRun={onRunBacktest} cta="Run backtest"
+          msg="Score the model against what actually happened in your history — an honest, out-of-sample backtest." />
       )}
+    </div>
+  );
+}
+
+function BacktestPrompt({ msg, cta, onRun }) {
+  return (
+    <div className="flex flex-col items-center gap-3 rounded-2xl border border-[var(--line)] bg-[var(--surface)] p-12 text-center">
+      <p className="max-w-md text-sm text-[var(--ink-2)]">{msg}</p>
+      <Button onClick={onRun}>{cta}</Button>
     </div>
   );
 }
@@ -453,19 +470,43 @@ function Modal({ title, onClose, children }) {
   );
 }
 
+// What the importer accepts, in the order a seller usually adds them. Each file
+// is optional and additive - import as many as you have and they compound.
+const IMPORT_SOURCES = [
+  { t: "Amazon Orders report", d: "sales history → forecasts" },
+  { t: "FBA Inventory report", d: "current on-hand" },
+  { t: "Storage Fees + Inventory Age", d: "real fee & aged-surcharge warnings" },
+  { t: "A SKU + Unit Cost sheet", d: "your COGS, for buy plans" },
+];
+
 function ImportPanel({ importing, onImport, onReject, rangeLabel, products }) {
   const [file, setFile] = useState(null);
   return (
-    <div className="flex flex-col gap-3">
-      {products != null && (
+    <div className="flex flex-col gap-3.5">
+      {products != null ? (
         <p className="text-sm text-[var(--ink-2)]">
-          Your catalog has <b className="text-[var(--ink)]">{formatNumber(products)}</b> products{rangeLabel ? ` (${rangeLabel})` : ""}. Drop a newer sales export and it merges in — the app re-scans automatically.
+          Your catalog has <b className="text-[var(--ink)]">{formatNumber(products)}</b> products{rangeLabel ? ` (${rangeLabel})` : ""}. Drop another export — newer sales, stock, fees, or costs — and it merges in. The app re-scans automatically.
+        </p>
+      ) : (
+        <p className="text-sm text-[var(--ink-2)]">
+          Drop any Seller Central export and it builds your catalog. Import as many as you have — each adds to the picture.
         </p>
       )}
+      <ul className="flex flex-col gap-1.5 rounded-xl border border-[var(--line)] bg-[var(--surface-2)] p-3.5">
+        {IMPORT_SOURCES.map((s) => (
+          <li key={s.t} className="flex items-start gap-2 text-[13px]">
+            <svg className="mt-0.5 size-3.5 shrink-0 text-pos-500" viewBox="0 0 20 20" fill="none"><path d="M4 10.5 8.5 15 16 6" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" /></svg>
+            <span><b className="font-semibold text-[var(--ink)]">{s.t}</b> <span className="text-[var(--ink-3)]">— {s.d}</span></span>
+          </li>
+        ))}
+      </ul>
       <FileDrop file={file} onSelect={setFile} onReject={onReject} />
       <Button disabled={!file || importing} onClick={() => file && onImport(file)}>
-        {importing ? "Syncing…" : "Sync sales"}
+        {importing ? "Importing…" : "Import file"}
       </Button>
+      <p className="text-center text-[11px] text-[var(--ink-3)]">
+        Files are read on this computer and never uploaded. A plain CSV/Excel (Shopify, Square, any POS) works too.
+      </p>
     </div>
   );
 }
@@ -523,8 +564,8 @@ function FirstRun({ onImport }) {
           <svg className="size-6" viewBox="0 0 24 24" fill="none"><path d="M12 15.5V4m0 0L7.5 8.5M12 4l4.5 4.5" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" /><path d="M4 15v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" /></svg>
         </div>
         <h2 className="serif mt-4 text-xl font-semibold">Welcome to Insighta</h2>
-        <p className="mt-2 text-sm leading-relaxed text-[var(--ink-2)]">Import a CSV or Excel of your sales history to build your catalog. After that the app remembers it — you just sync new sales.</p>
-        <Button className="mt-5" onClick={onImport}>Import sales</Button>
+        <p className="mt-2 text-sm leading-relaxed text-[var(--ink-2)]">Import your Amazon Seller Central exports — orders, FBA inventory, fees — to build your catalog. Add your costs and the app plans your buys. Your data stays on this computer.</p>
+        <Button className="mt-5" onClick={onImport}>Import your data</Button>
       </div>
     </div>
   );

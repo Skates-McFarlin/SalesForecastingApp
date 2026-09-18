@@ -1,7 +1,9 @@
 import { useRef, useState } from "react";
 
-const ACCEPT = ".csv,.xlsx,.xls";
-const VALID = /\.(csv|xlsx|xls)$/i;
+// Amazon's All Orders report is a tab-delimited .txt, so accept it (and .tsv)
+// alongside CSV/Excel - the backend sniffs the delimiter either way.
+const ACCEPT = ".csv,.tsv,.txt,.xlsx,.xls";
+const VALID = /\.(csv|tsv|txt|xlsx|xls)$/i;
 
 export default function FileDrop({ file, onSelect, onReject }) {
   const [dragging, setDragging] = useState(false);
@@ -10,7 +12,7 @@ export default function FileDrop({ file, onSelect, onReject }) {
   const accept = (candidate) => {
     if (!candidate) return;
     if (!VALID.test(candidate.name)) {
-      onReject?.(`"${candidate.name}" isn't a supported file. Upload a .csv, .xlsx or .xls file.`);
+      onReject?.(`"${candidate.name}" isn't a supported file. Upload a .csv, .txt, .tsv, .xlsx or .xls file.`);
       return;
     }
     onSelect(candidate);
@@ -97,8 +99,8 @@ export default function FileDrop({ file, onSelect, onReject }) {
             strokeLinecap="round"
           />
         </svg>
-        <span className="text-sm font-medium">Drop your sales file</span>
-        <span className="text-xs text-[var(--ink-3)]">or click to browse — CSV or Excel</span>
+        <span className="text-sm font-medium">Drop a file here</span>
+        <span className="text-xs text-[var(--ink-3)]">or click to browse — CSV, Excel, or Amazon .txt</span>
       </button>
       <input
         ref={inputRef}

@@ -4,8 +4,10 @@ import {
 } from "recharts";
 import { createPurchaseOrder, receivePurchaseOrder, cancelPurchaseOrder } from "../api";
 import { formatNumber, reorder, SectionLabel } from "./ui";
+import { fbaCarrying } from "../fba";
 
 const money = (n) => `$${Math.round(Number(n) || 0).toLocaleString()}`;
+const OVERSTOCK_DAYS = 120; // days of cover before a "no order" SKU reads as overstocked (matches exceptions.js)
 const DAY = 86400000;
 const fmtDate = (d) => d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
 const addDays = (n) => new Date(Date.now() + n * DAY);
@@ -94,7 +96,7 @@ export default function SkuDrawer({ row, settings, service, onClose, onInventory
 
         <div className="flex flex-col gap-6 px-6 py-6">
           {/* The call */}
-          <Rationale d={d} order={d.order} orderByDate={orderByDate} cover={cover}
+          <Rationale row={row} d={d} order={d.order} orderByDate={orderByDate} cover={cover}
             stockoutDay={proj.stockoutBeforeResupply ? proj.stockoutDay : null} unitCost={Number(row.UnitCost) || 0} />
 
           {/* Projection */}
@@ -129,7 +131,7 @@ export default function SkuDrawer({ row, settings, service, onClose, onInventory
   );
 }
 
-function Rationale({ d, order, orderByDate, cover, stockoutDay, unitCost }) {
+function Rationale({ row, d, order, orderByDate, cover, stockoutDay, unitCost }) {
   const urgent = d.reorderNow || (stockoutDay != null && stockoutDay <= d.leadTimeDays);
   if (order > 0) {
     return (
@@ -146,6 +148,23 @@ function Rationale({ d, order, orderByDate, cover, stockoutDay, unitCost }) {
               ? <>Stock is at or below the reorder point of <b className="text-[var(--ink)]">{formatNumber(d.reorderPoint)}</b>. </>
               : <>Ordering now keeps you above the reorder point through the lead time. </>}
           Brings you up to <b className="text-[var(--ink)]">{formatNumber(d.orderUpTo)}</b>{unitCost > 0 ? <> · about <b className="text-[var(--ink)]">{money(order * unitCost)}</b></> : null}.
+        </p>
+      </div>
+    );
+  }
+  // Overstocked: no order needed, but sitting on far more than the cycle needs -
+  // for an FBA seller that's a storage bleed and aged-surcharge risk, not "well
+  // stocked". Surface the same carrying cost the Today card shows.
+  if (cover != null && cover >= OVERSTOCK_DAYS) {
+    const fba = fbaCarrying(row, Number(row.DailyRate), cover);
+    return (
+      <div className="rounded-2xl border border-amber-300/60 bg-amber-50 p-5 dark:border-amber-400/25 dark:bg-amber-400/10">
+        <div className="display text-[24px] font-bold leading-none text-amber-700 dark:text-amber-400">Overstocked</div>
+        <p className="mt-2.5 text-sm leading-relaxed text-[var(--ink-2)]">
+          About <b className="text-[var(--ink)]">{formatNumber(Math.round(cover))} days</b> of cover — far more than the reorder cycle needs.
+          {fba.monthlyFee ? <> Costing <b className="text-[var(--ink)]">~{money(fba.monthlyFee)}/mo</b> in Amazon fees{fba.modeled ? " (est)" : ""}</> : null}
+          {fba.aged ? <>{fba.monthlyFee ? ", with " : " "}<b className="text-[var(--ink)]">{formatNumber(fba.aged.units)}</b> unit{fba.aged.units === 1 ? "" : "s"} past 181 days (aged-surcharge risk)</> : null}
+          {fba.monthlyFee || fba.aged ? "." : ""} Pause ordering; consider a promotion or removing the excess.
         </p>
       </div>
     );
@@ -234,15 +253,19 @@ function EditInventory({ row, onChange }) {
   );
 }
 
+// Show a stored number cleanly (a derived price can carry float noise like
+// 321.21999999999997) while keeping full precision for what the user types.
+const clean = (v) => (v === "" || v == null ? "" : String(Math.round(Number(v) * 100) / 100));
+
 function EditField({ label, value, prefix, suffix, onCommit }) {
-  const [draft, setDraft] = useState(value ?? "");
-  useEffect(() => setDraft(value ?? ""), [value]);
+  const [draft, setDraft] = useState(clean(value));
+  useEffect(() => setDraft(clean(value)), [value]);
   const commit = () => {
     const raw = String(draft).trim();
     if (raw === "" && (value == null || value === "")) return;
     const n = Number(raw);
-    if (raw !== "" && (!Number.isFinite(n) || n < 0)) { setDraft(value ?? ""); return; }
-    if (String(value ?? "") !== raw) onCommit(raw === "" ? "" : n);
+    if (raw !== "" && (!Number.isFinite(n) || n < 0)) { setDraft(clean(value)); return; }
+    if (clean(value) !== raw) onCommit(raw === "" ? "" : n);
   };
   return (
     <label className="block">
