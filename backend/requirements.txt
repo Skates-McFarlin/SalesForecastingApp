@@ -26,6 +26,10 @@ huggingface-hub==0.28.1
 idna==3.10
 importlib_resources==6.5.2
 itsdangerous==2.2.0
+jaraco.context==6.1.2
+jaraco.functools==4.6.0
+jaraco.text==4.3.0
+more-itertools==11.1.0
 Jinja2==3.1.5
 joblib==1.4.2
 kiwisolver==1.4.8
@@ -41,6 +45,7 @@ panda==0.3.1
 pandas==2.2.3
 patsy==1.0.1
 pillow==11.1.0
+platformdirs==4.11.10
 pyparsing==3.2.1
 python-dateutil==2.9.0.post0
 pytz==2025.1
