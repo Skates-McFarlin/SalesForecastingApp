@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { optimizeBudget } from "../optimize";
-import { Card, formatNumber, SectionLabel, Stat } from "./ui";
+import { createPurchaseOrder, receivePurchaseOrder, cancelPurchaseOrder } from "../api";
+import { Button, Card, formatNumber, SectionLabel, Stat } from "./ui";
 
 const money = (n) => `$${Math.round(Number(n) || 0).toLocaleString()}`;
 const pct = (x) => `${(x * 100).toFixed(1)}%`;
@@ -9,7 +10,7 @@ const pct = (x) => `${(x * 100).toFixed(1)}%`;
 // across the whole catalog to maximize expected service (fill rate), spending
 // each dollar where it buys the most. Live: drag the budget and watch service
 // and the per-SKU allocation move.
-export default function OrderPlan({ rows, settings, service }) {
+export default function OrderPlan({ rows, settings, service, onInventoryResult, onOpenSku }) {
   // The unconstrained plan (budget = Infinity) sets the "fully funded" cost.
   const full = useMemo(
     () => optimizeBudget(rows, settings, service.z, Infinity),
@@ -29,7 +30,38 @@ export default function OrderPlan({ rows, settings, service }) {
     [rows, settings, service, b]
   );
 
-  if (!ideal) {
+  // Every open PO across the catalog, so Buying is where orders live end to end.
+  const openOrders = useMemo(() => {
+    const out = [];
+    for (const r of rows) {
+      const key = r.Sku || r.ProductName;
+      for (const po of r.OpenPOs || []) out.push({ ...po, key, name: r.ProductName, sku: r.Sku });
+    }
+    return out.sort((a, b) => (a.expected_on || "9999").localeCompare(b.expected_on || "9999"));
+  }, [rows]);
+
+  const buyable = plan.items.filter((it) => it.allocated > 0);
+
+  // Turn the budget plan into real, trackable purchase orders in one action.
+  const [commit, setCommit] = useState({ busy: false, done: null, error: null });
+  const createPOs = async () => {
+    setCommit({ busy: true, done: null, error: null });
+    let made = 0, spent = 0, failed = 0;
+    for (const it of buyable) {
+      try {
+        const state = await createPurchaseOrder(it.key, it.allocated);
+        onInventoryResult?.(it.key, state);
+        made += 1; spent += it.spend;
+      } catch { failed += 1; }
+    }
+    setCommit({ busy: false, done: { made, spent, failed }, error: failed ? `${failed} order${failed === 1 ? "" : "s"} failed` : null });
+  };
+
+  const poResult = async (key, fn) => {
+    try { const state = await fn(); onInventoryResult?.(key, state); } catch { /* keep as-is */ }
+  };
+
+  if (!ideal && openOrders.length === 0) {
     return (
       <Card className="p-10 text-center text-sm text-[var(--ink-2)]">
         Nothing to buy right now — every product with a unit cost is already covered for its
@@ -40,6 +72,7 @@ export default function OrderPlan({ rows, settings, service }) {
 
   return (
     <div className="flex flex-col gap-5">
+      {ideal > 0 && (<>
       <div>
         <SectionLabel className="mb-1">Budget plan</SectionLabel>
         <p className="max-w-2xl text-sm leading-relaxed text-[var(--ink-2)]">
@@ -97,6 +130,27 @@ export default function OrderPlan({ rows, settings, service }) {
         <Stat label="Not funded" value={formatNumber(plan.counts.unfunded)} sub="orders skipped" />
       </div>
 
+      {/* Commit: the plan becomes real orders you can track and receive. */}
+      <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-[var(--line)] bg-[var(--surface-2)] p-4">
+        <div className="min-w-0">
+          <div className="text-sm font-semibold">
+            {commit.done
+              ? `Created ${formatNumber(commit.done.made)} purchase order${commit.done.made === 1 ? "" : "s"} · ${money(commit.done.spent)} committed`
+              : `Place ${formatNumber(buyable.length)} order${buyable.length === 1 ? "" : "s"} for ${money(plan.allocatedSpend)}`}
+          </div>
+          <div className="mt-0.5 text-xs text-[var(--ink-3)]">
+            {commit.error
+              ? <span className="text-neg-500 dark:text-neg-400">{commit.error}</span>
+              : commit.done
+                ? "Tracked below as on-order. Receive them as they arrive to update on-hand."
+                : "Turns this allocation into tracked purchase orders — on-order goes up and stockout risks clear."}
+          </div>
+        </div>
+        <Button onClick={createPOs} disabled={commit.busy || buyable.length === 0}>
+          {commit.busy ? "Placing…" : commit.done ? "Place again" : "Create these POs"}
+        </Button>
+      </div>
+
       <div>
         <div className="mb-2 flex items-center justify-between">
           <SectionLabel>Allocation by product</SectionLabel>
@@ -120,7 +174,9 @@ export default function OrderPlan({ rows, settings, service }) {
             </thead>
             <tbody>
               {plan.items.map((it) => (
-                <tr key={it.key} className="border-b border-[var(--line)] last:border-b-0">
+                <tr key={it.key}
+                  onClick={() => onOpenSku?.(it.key)}
+                  className={`border-b border-[var(--line)] last:border-b-0 ${onOpenSku ? "cursor-pointer hover:bg-[var(--surface-2)]" : ""}`}>
                   <td className="px-3 py-2">
                     <div className="font-medium">{it.name}</div>
                     {it.sku && <div className="tnum text-[11px] text-[var(--ink-3)]">{it.sku}</div>}
@@ -137,6 +193,48 @@ export default function OrderPlan({ rows, settings, service }) {
             </tbody>
           </table>
         </div>
+      </div>
+      </>)}
+
+      <OpenOrders orders={openOrders} onReceive={(key, id) => poResult(key, () => receivePurchaseOrder(id))}
+        onCancel={(key, id) => poResult(key, () => cancelPurchaseOrder(id))} onOpenSku={onOpenSku} />
+    </div>
+  );
+}
+
+// The other half of Buying: orders already on the way. Consolidated here so a
+// plan flows plan -> PO -> track -> receive without hunting through the table.
+function OpenOrders({ orders, onReceive, onCancel, onOpenSku }) {
+  const [busyId, setBusyId] = useState(null);
+  if (!orders.length) return null;
+  const totalUnits = orders.reduce((s, o) => s + Number(o.quantity || 0), 0);
+  const run = async (id, fn) => { setBusyId(id); await fn(); setBusyId(null); };
+  return (
+    <div>
+      <div className="mb-2 flex items-center justify-between">
+        <SectionLabel>On the way</SectionLabel>
+        <span className="text-[11px] text-[var(--ink-3)]">
+          {formatNumber(orders.length)} open order{orders.length === 1 ? "" : "s"} · {formatNumber(totalUnits)} units
+        </span>
+      </div>
+      <div className="overflow-hidden rounded-xl border border-[var(--line)]">
+        {orders.map((o) => (
+          <div key={o.id} className="flex items-center gap-3 border-b border-[var(--line)] px-4 py-3 last:border-b-0 hover:bg-[var(--surface-2)]">
+            <button onClick={() => onOpenSku?.(o.key)} className={`min-w-0 flex-1 text-left ${onOpenSku ? "cursor-pointer" : "cursor-default"}`}>
+              <div className="truncate font-medium">{o.name}</div>
+              <div className="text-[11px] text-[var(--ink-3)]">
+                <span className="tnum">{formatNumber(o.quantity)}</span> units · placed {o.placed_on}
+                {o.expected_on ? <> · <span className="text-[var(--ink-2)]">expected {o.expected_on}</span></> : null}
+              </div>
+            </button>
+            <div className="flex shrink-0 gap-1.5">
+              <button onClick={() => run(o.id, () => onReceive(o.key, o.id))} disabled={busyId === o.id}
+                className="rounded-md bg-accent-500 px-2.5 py-1 text-xs font-semibold text-white transition-colors hover:bg-accent-600 disabled:opacity-45">Receive</button>
+              <button onClick={() => run(o.id, () => onCancel(o.key, o.id))} disabled={busyId === o.id}
+                className="rounded-md border border-[var(--line-strong)] px-2.5 py-1 text-xs font-medium text-[var(--ink-2)] transition-colors hover:bg-[var(--surface-2)] disabled:opacity-45">Cancel</button>
+            </div>
+          </div>
+        ))}
       </div>
     </div>
   );

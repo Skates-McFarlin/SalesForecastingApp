@@ -3,579 +3,401 @@ import {
   fetchCatalog, importSales, forecastCatalog, scoreCatalogAccuracy,
   fetchSettings, updateSettings, updateProductInventory,
 } from "./api";
-import { catalogRange, cmp, dateBounds, durationThrough, monthRangeForYear } from "./dates";
+import { catalogRange } from "./dates";
 import AccuracyResults from "./components/AccuracyResults";
 import Assistant from "./components/Assistant";
-import ControlPanel from "./components/ControlPanel";
 import Exceptions from "./components/Exceptions";
+import FileDrop from "./components/FileDrop";
 import ForecastChart from "./components/ForecastChart";
 import KpiStrip from "./components/KpiStrip";
 import Ledger from "./components/Ledger";
 import OrderPlan from "./components/OrderPlan";
 import ResultsTable from "./components/ResultsTable";
-import { Card, ErrorNote, SectionLabel, Select, SERVICE_LEVELS } from "./components/ui";
+import SkuDrawer from "./components/SkuDrawer";
+import { Button, ErrorNote, formatNumber, SectionLabel, Select, SERVICE_LEVELS } from "./components/ui";
 
-const TABS = [
-  { id: "attention", label: "Attention" },
-  { id: "assistant", label: "Assistant" },
+const VIEWS = [
+  { id: "today", label: "Today" },
   { id: "forecast", label: "Forecast" },
-  { id: "orderplan", label: "Order plan" },
-  { id: "accuracy", label: "Accuracy" }, // holds both Track record and Backtest
+  { id: "buying", label: "Buying" },
+  { id: "track", label: "Track record" },
 ];
 
+const MON = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+const monthYear = (s) => {
+  if (!s) return "";
+  const [y, m] = s.split("-").map(Number);
+  return `${MON[(m || 1) - 1]} ${y}`;
+};
 const emptyRun = { rows: null, error: null, busy: false };
 
 export default function App() {
-  const [theme, setTheme] = useState(
-    () => localStorage.getItem("insighta-theme") ?? "light"
-  );
-  const [tab, setTab] = useState("attention"); // open onto "what needs you"
-  // The Accuracy tab holds two views: real outcomes (the ledger) and a backtest.
-  const [accuracyView, setAccuracyView] = useState("track");
-
-  const [year, setYear] = useState(new Date().getFullYear());
-  const [month, setMonth] = useState(1);
-  const [duration, setDuration] = useState(12);
-  // Optional specific future window on the Forecast tab. null = just use the
-  // length dropdown; { from: {y,m}, through: {y,m} } = report only that window
-  // (the full path from the data edge is still forecast to reach it).
-  const [fcWindow, setFcWindow] = useState(null);
+  const [theme, setTheme] = useState(() => localStorage.getItem("insighta-theme") ?? "light");
+  const [view, setView] = useState("today");
+  const [trackView, setTrackView] = useState("track"); // track record | backtest
 
   const [forecast, setForecast] = useState(emptyRun);
   const [accuracy, setAccuracy] = useState(emptyRun);
-  const [service, setService] = useState(SERVICE_LEVELS[1]); // 95% default
-  const [settings, setSettings] = useState(null); // inventory defaults (Phase 2)
-  const [catalog, setCatalog] = useState(null); // stored business summary
+  const [service, setService] = useState(SERVICE_LEVELS[1]); // 95%
+  const [settings, setSettings] = useState(null);
+  const [catalog, setCatalog] = useState(null);
+  const [dataRange, setDataRange] = useState(null);
   const [importing, setImporting] = useState(false);
-  const [dataRange, setDataRange] = useState(null); // catalog's date coverage
-  const [elapsed, setElapsed] = useState(0);
-  // Bumped after a forecast or a sync so the Track record tab refetches the
-  // ledger (a new run was recorded, or new sales may have graded old ones).
   const [ledgerToken, setLedgerToken] = useState(0);
+  const [showImport, setShowImport] = useState(false);
+  const [showSettings, setShowSettings] = useState(false);
+  const [openSku, setOpenSku] = useState(null); // key of the drilled-in product
   const abortRef = useRef(null);
+  const autoRan = useRef(false);
 
   useEffect(() => {
     document.documentElement.classList.toggle("dark", theme === "dark");
     localStorage.setItem("insighta-theme", theme);
   }, [theme]);
 
-  // The app opens onto the stored catalog, not a blank upload screen.
   const refreshCatalog = () =>
     fetchCatalog()
-      .then((c) => {
-        setCatalog(c);
-        setDataRange(catalogRange(c));
-        return c;
-      })
+      .then((c) => { setCatalog(c); setDataRange(catalogRange(c)); return c; })
       .catch(() => setCatalog({ empty: true, products: 0 }));
 
   useEffect(() => {
     refreshCatalog();
-    // Inventory defaults; sync the service-level control to the saved default.
     fetchSettings()
       .then((s) => {
         setSettings(s);
         const match = SERVICE_LEVELS.find((lvl) => lvl.value === s.service_level);
         if (match) setService(match);
       })
-      .catch(() => setSettings({
-        default_lead_time_days: 14, review_period_days: 7,
-        service_level: 0.95, holding_cost_rate: 0.25,
-      }));
+      .catch(() => setSettings({ default_lead_time_days: 14, review_period_days: 7, service_level: 0.95, holding_cost_rate: 0.25 }));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Persist an inventory-defaults change and reflect it immediately.
+  const grain = catalog?.grain === "weekly" ? "weekly" : "monthly";
+  const hasCatalog = !!catalog && !catalog.empty;
+  const rangeLabel = hasCatalog && catalog.date_from && catalog.date_to
+    ? `${monthYear(catalog.date_from)} – ${monthYear(catalog.date_to)}` : null;
+  const horizon = grain === "weekly" ? 8 : 12;
+
   const changeSettings = (patch) => {
     setSettings((s) => ({ ...s, ...patch }));
     updateSettings(patch).catch(() => {});
   };
 
-  // Backend inventory field -> the capitalized key the forecast rows carry.
   const INV_TO_ROW = {
     on_hand: "OnHand", on_order: "OnOrder", lead_time_days: "LeadTimeDays",
-    unit_cost: "UnitCost", moq: "MOQ", case_pack: "CasePack",
+    unit_cost: "UnitCost", price: "Price", moq: "MOQ", case_pack: "CasePack",
   };
-  // Merge an authoritative inventory-state object (capitalized keys, as the
-  // backend returns it - incl. PO-derived on-order, learned lead, open POs) into
-  // the matching forecast row so the reorder math recomputes instantly.
   const applyInventory = (key, state) => {
     if (!state) return;
-    setForecast((f) => ({
-      ...f,
-      rows: f.rows?.map((r) => ((r.Sku || r.ProductName) === key ? { ...r, ...state } : r)),
-    }));
+    setForecast((f) => ({ ...f, rows: f.rows?.map((r) => ((r.Sku || r.ProductName) === key ? { ...r, ...state } : r)) }));
   };
-
-  // Edit one product's inventory: optimistic local update, persist, then sync to
-  // the server's returned state (picks up inventory_updated_at etc.).
   const changeInventory = (key, patch) => {
     const rowPatch = {};
-    for (const [k, v] of Object.entries(patch)) {
-      rowPatch[INV_TO_ROW[k] ?? k] = v === "" ? null : v;
-    }
-    setForecast((f) => ({
-      ...f,
-      rows: f.rows?.map((r) => ((r.Sku || r.ProductName) === key ? { ...r, ...rowPatch } : r)),
-    }));
+    for (const [k, v] of Object.entries(patch)) rowPatch[INV_TO_ROW[k] ?? k] = v === "" ? null : v;
+    setForecast((f) => ({ ...f, rows: f.rows?.map((r) => ((r.Sku || r.ProductName) === key ? { ...r, ...rowPatch } : r)) }));
     updateProductInventory(key, patch).then((s) => applyInventory(key, s)).catch(() => {});
   };
 
-  // Forecast and Attention share the same forecast run (Attention is a lens on
-  // it); only Accuracy has its own state.
-  const active = tab === "accuracy" ? accuracy : forecast;
-  const setActive = tab === "accuracy" ? setAccuracy : setForecast;
-
-  // Start-date window derived from the uploaded file (past for backtesting,
-  // forward for forecasting). Falls back to a default range before a file lands.
-  const bounds = useMemo(() => dateBounds(dataRange, tab), [dataRange, tab]);
-
-  // The catalog's grain (weekly for daily data, else monthly) drives whether the
-  // horizon is counted in weeks or months.
-  const grain = catalog?.grain === "weekly" ? "weekly" : "monthly";
-  // Forecasts anchor at the catalog's data edge (the backend derives this); the
-  // UI shows it and turns a "through <month>" target into a horizon length.
-  const origin = catalog?.forecast_origin ?? null;
-  const hasCatalog = !!catalog && !catalog.empty;
-  useEffect(() => {
-    setDuration(grain === "weekly" ? 8 : 12);
-    setFcWindow(null); // a window/length doesn't carry across grains
-  }, [grain]);
-  // Effective horizon for the Forecast tab: a window forecasts far enough to
-  // reach its "through" month; otherwise the length dropdown applies. The window
-  // start (its "from" month, as an ISO date) narrows the reported result.
-  const forecastDuration = fcWindow ? durationThrough(origin, fcWindow.through, grain) : duration;
-  const forecastWindowStart = fcWindow
-    ? `${fcWindow.from.y}-${String(fcWindow.from.m).padStart(2, "0")}-01`
-    : null;
-
-  // A freshly detected file snaps the start date to a sensible default.
-  useEffect(() => {
-    if (!dataRange) return;
-    const { def } = dateBounds(dataRange, tab);
-    setYear(def.y);
-    setMonth(def.m);
-    // Only when the file changes, not on every tab flip.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [dataRange]);
-
-  // Keep the selection inside what the active tab allows (e.g. after switching
-  // to Accuracy, a future forecast start snaps back into the data).
-  useEffect(() => {
-    const cur = { y: year, m: month };
-    if (cmp(cur, bounds.min) < 0 || cmp(cur, bounds.max) > 0) {
-      setYear(bounds.def.y);
-      setMonth(bounds.def.m);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tab]);
-
-  const changeYear = (y) => {
-    const { lo, hi } = monthRangeForYear(bounds, y);
-    setYear(y);
-    setMonth((m) => Math.min(Math.max(m, lo), hi));
-  };
-
-  useEffect(() => {
-    if (!active.busy) return;
-    const startedAt = Date.now();
-    setElapsed(0);
-    const id = setInterval(() => setElapsed(Date.now() - startedAt), 500);
-    return () => clearInterval(id);
-  }, [active.busy]);
-
-  const run = async () => {
-    if (!catalog || catalog.empty) return;
+  // The catalog forecast — Today, Forecast and Buying are lenses on this one run.
+  const runForecast = async () => {
+    if (!hasCatalog) return;
     const controller = new AbortController();
     abortRef.current = controller;
-    setActive({ rows: null, error: null, busy: true });
-
+    setForecast({ rows: null, error: null, busy: true });
     try {
-      let rows;
-      if (tab === "accuracy") {
-        // Accuracy backtests a chosen in-history window.
-        const startDate = `${year}-${String(month).padStart(2, "0")}-01`;
-        rows = await scoreCatalogAccuracy(startDate, duration, { signal: controller.signal });
-      } else {
-        // Forecast/Attention: always forward from the data edge (a window narrows
-        // what's reported).
-        rows = await forecastCatalog(forecastDuration, {
-          windowStart: forecastWindowStart,
-          signal: controller.signal,
-        });
-      }
-      setActive({ rows, error: null, busy: false });
-      // A forecast records a run in the ledger - refresh the track record.
-      if (tab !== "accuracy") setLedgerToken((t) => t + 1);
+      const rows = await forecastCatalog(horizon, { signal: controller.signal });
+      setForecast({ rows, error: null, busy: false });
+      setLedgerToken((t) => t + 1);
     } catch (err) {
-      if (err.name === "AbortError") {
-        setActive({ rows: null, error: null, busy: false });
-        return;
-      }
-      setActive({ rows: null, error: err.message, busy: false });
-    } finally {
-      abortRef.current = null;
+      if (err.name === "AbortError") { setForecast({ rows: null, error: null, busy: false }); return; }
+      setForecast({ rows: null, error: err.message, busy: false });
+    } finally { abortRef.current = null; }
+  };
+
+  const runAccuracy = async () => {
+    if (!hasCatalog || !dataRange) return;
+    setAccuracy({ rows: null, error: null, busy: true });
+    try {
+      const start = `${dataRange.min_year}-${String(dataRange.min_month).padStart(2, "0")}-01`;
+      const rows = await scoreCatalogAccuracy(start, horizon);
+      setAccuracy({ rows, error: null, busy: false });
+    } catch (err) {
+      setAccuracy({ rows: null, error: err.message, busy: false });
     }
   };
 
-  // Import/sync a sales file into the catalog, then reopen onto the fresh state.
+  // Today is the app: scan once automatically when the catalog is ready.
+  useEffect(() => {
+    if (hasCatalog && !autoRan.current && !forecast.rows && !forecast.busy) {
+      autoRan.current = true;
+      runForecast();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hasCatalog]);
+
   const doImport = async (f) => {
-    setActive({ ...active, error: null });
     setImporting(true);
     try {
       await importSales(f);
       await refreshCatalog();
-      // Synced sales may have graded past forecasts - refresh the track record.
+      autoRan.current = false; // re-scan against the fresh catalog
       setLedgerToken((t) => t + 1);
+      setShowImport(false);
     } catch (err) {
-      setActive({ ...active, error: err.message });
-    } finally {
-      setImporting(false);
-    }
+      setForecast((s) => ({ ...s, error: err.message }));
+    } finally { setImporting(false); }
   };
 
+  const rows = forecast.rows;
+  const rowCount = rows?.length ?? 0;
+
   return (
-    <div className="flex h-full flex-col">
-      <header className="flex shrink-0 items-center gap-6 border-b border-[var(--line)] bg-[var(--surface)] px-4 py-2.5">
-        <div className="flex items-center gap-2.5">
-          <Mark />
-          <span className="font-semibold tracking-tight">Insighta</span>
-        </div>
+    <div className="min-h-full">
+      <TopBar
+        view={view} onView={setView}
+        hasCatalog={hasCatalog} products={catalog?.products} rangeLabel={rangeLabel}
+        onSync={() => setShowImport(true)} onSettings={() => setShowSettings(true)}
+        theme={theme} onTheme={() => setTheme(theme === "dark" ? "light" : "dark")}
+      />
 
-        <nav className="flex items-center gap-1">
-          {TABS.map((t) => (
-            <button
-              key={t.id}
-              onClick={() => setTab(t.id)}
-              className={`rounded-lg px-3 py-1.5 text-sm font-medium transition-colors ${
-                tab === t.id
-                  ? "bg-[var(--surface-3)] text-[var(--ink)]"
-                  : "text-[var(--ink-3)] hover:bg-[var(--surface-2)] hover:text-[var(--ink-2)]"
-              }`}
-            >
-              {t.label}
-            </button>
-          ))}
-        </nav>
+      <main className="mx-auto max-w-[1160px] px-8 pb-24 pt-8">
+        {forecast.error && (
+          <div className="mb-5"><ErrorNote onDismiss={() => setForecast((s) => ({ ...s, error: null }))}>{forecast.error}</ErrorNote></div>
+        )}
 
-        <button
-          onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
-          className="ml-auto rounded-lg p-2 text-[var(--ink-3)] transition-colors hover:bg-[var(--surface-2)] hover:text-[var(--ink)]"
-          aria-label={`Switch to ${theme === "dark" ? "light" : "dark"} mode`}
-          title={`Switch to ${theme === "dark" ? "light" : "dark"} mode`}
-        >
-          {theme === "dark" ? <SunIcon /> : <MoonIcon />}
-        </button>
-      </header>
-
-      <div className="flex min-h-0 flex-1">
-        <aside className="w-72 shrink-0 border-r border-[var(--line)] bg-[var(--surface)]">
-          <ControlPanel
-            catalog={catalog}
-            importing={importing}
-            onImport={doImport}
-            onReject={(message) => setActive({ ...active, error: message })}
-            year={year}
-            month={month}
-            duration={duration}
-            grain={grain}
-            bounds={bounds}
-            onYear={changeYear}
-            onMonth={setMonth}
-            onDuration={setDuration}
-            onSubmit={run}
-            onCancel={() => abortRef.current?.abort()}
-            busy={active.busy}
-            elapsed={elapsed}
-            mode={
-              tab === "attention" || tab === "orderplan"
-                ? "forecast"
-                : tab === "accuracy"
-                  ? accuracyView === "backtest" ? "accuracy" : "ledger"
-                  : tab === "assistant"
-                    ? "ledger"
-                    : tab
-            }
-            origin={origin}
-            fcWindow={fcWindow}
-            onWindow={setFcWindow}
-            forecastDuration={forecastDuration}
-            submitLabel={
-              tab === "accuracy" ? "Score accuracy" : tab === "attention" ? "Scan catalog" : "Generate forecast"
-            }
-            busyLabel={
-              tab === "accuracy" ? "Scoring accuracy…" : tab === "attention" ? "Scanning…" : "Forecasting…"
-            }
+        {!hasCatalog ? (
+          <FirstRun onImport={() => setShowImport(true)} />
+        ) : view === "today" ? (
+          <Today
+            forecast={forecast} settings={settings} service={service}
+            onInventoryResult={applyInventory} onRun={runForecast}
+            onAsk={() => setView("assistant")} onOpenForecast={() => setView("forecast")}
+            onOpenSku={setOpenSku}
           />
-        </aside>
+        ) : view === "assistant" ? (
+          <AssistantView rows={rows} settings={settings} service={service} catalog={catalog} onBack={() => setView("today")} />
+        ) : view === "forecast" ? (
+          <ForecastView
+            forecast={forecast} settings={settings} service={service} setService={setService}
+            changeSettings={changeSettings} changeInventory={changeInventory}
+            applyInventory={applyInventory} grain={grain} onRun={runForecast}
+          />
+        ) : view === "buying" ? (
+          <Section title="Buying" busy={forecast.busy} rows={rows} onRun={runForecast}
+            desc="Plan a budgeted buy, then turn it into purchase orders you can track.">
+            <OrderPlan rows={rows || []} settings={settings} service={service}
+              onInventoryResult={applyInventory} onOpenSku={setOpenSku} />
+          </Section>
+        ) : view === "track" ? (
+          <TrackView
+            trackView={trackView} setTrackView={setTrackView}
+            accuracy={accuracy} ledgerToken={ledgerToken} onRunBacktest={runAccuracy}
+          />
+        ) : null}
+      </main>
 
-        <main className="min-w-0 flex-1 overflow-y-auto p-5">
-          {active.error && (
-            <div className="mb-4">
-              <ErrorNote onDismiss={() => setActive({ ...active, error: null })}>
-                {active.error}
-              </ErrorNote>
-            </div>
-          )}
-
-          {tab === "attention" && active.busy && <RunningState tab={tab} />}
-          {tab === "attention" && !active.busy && active.rows?.length > 0 && (
-            <Exceptions
-              rows={active.rows}
-              settings={settings}
-              service={service}
-              onInventoryResult={applyInventory}
-              onOpenForecast={() => setTab("forecast")}
-            />
-          )}
-          {tab === "attention" && !active.busy && !active.rows?.length && (
-            <RunEmpty
-              hasCatalog={!!catalog && !catalog.empty}
-              emptyResult={active.rows?.length === 0}
-              onRun={run}
-            />
-          )}
-
-          {tab === "orderplan" && active.busy && <RunningState tab={tab} />}
-          {tab === "orderplan" && !active.busy && active.rows?.length > 0 && (
-            <OrderPlan rows={active.rows} settings={settings} service={service} />
-          )}
-          {tab === "orderplan" && !active.busy && !active.rows?.length && (
-            <RunEmpty
-              hasCatalog={!!catalog && !catalog.empty}
-              emptyResult={active.rows?.length === 0}
-              onRun={run}
-              title="Plan a budgeted buy"
-              desc="Generate a forecast, then set a cash budget and the app allocates it across the catalog to maximize service."
-              ctaLabel="Generate forecast"
-            />
-          )}
-
-          {tab === "assistant" && active.busy && <RunningState tab={tab} />}
-          {tab === "assistant" && !active.busy && active.rows?.length > 0 && (
-            <Assistant rows={active.rows} settings={settings} service={service} catalog={catalog} />
-          )}
-          {tab === "assistant" && !active.busy && !active.rows?.length && (
-            <RunEmpty
-              hasCatalog={!!catalog && !catalog.empty}
-              emptyResult={active.rows?.length === 0}
-              onRun={run}
-              title="Ask about your business"
-              desc="Generate a forecast, then ask me anything — what needs you, how a product’s doing, or what to reorder."
-              ctaLabel="Generate forecast"
-            />
-          )}
-
-          {tab === "forecast" &&
-            (active.busy ? (
-              <RunningState tab={tab} />
-            ) : active.rows?.length > 0 ? (
-              <div className="flex min-h-0 flex-col gap-5">
-                <div className="flex flex-wrap items-center justify-between gap-3">
-                  <SectionLabel>Inventory plan</SectionLabel>
-                  <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5">
-                    <NumField
-                      label="Lead time"
-                      title="Default supplier resupply time, in days. Products can override this."
-                      value={settings?.default_lead_time_days ?? 14}
-                      suffix="d"
-                      onCommit={(v) => changeSettings({ default_lead_time_days: v })}
-                    />
-                    <NumField
-                      label="Review every"
-                      title="How often you reorder, in days — the order must cover lead time plus this."
-                      value={settings?.review_period_days ?? 7}
-                      suffix="d"
-                      onCommit={(v) => changeSettings({ review_period_days: v })}
-                    />
-                    <label className="inline-flex items-center gap-1.5 text-xs text-[var(--ink-3)]">
-                      <span title="Probability of not stocking out. Higher service level = more safety stock.">
-                        Service level
-                      </span>
-                      <Select
-                        className="w-auto py-1"
-                        value={service.value}
-                        onChange={(e) => {
-                          const lvl = SERVICE_LEVELS.find((s) => s.value === Number(e.target.value));
-                          setService(lvl);
-                          changeSettings({ service_level: lvl.value });
-                        }}
-                      >
-                        {SERVICE_LEVELS.map((s) => (
-                          <option key={s.value} value={s.value}>
-                            {s.label}
-                          </option>
-                        ))}
-                      </Select>
-                    </label>
-                  </div>
-                </div>
-                <KpiStrip rows={active.rows} service={service} settings={settings} />
-                <Card className="p-4">
-                  <ForecastChart rows={active.rows} service={service} settings={settings} />
-                </Card>
-                <ResultsTable
-                  rows={active.rows}
-                  service={service}
-                  setService={setService}
-                  settings={settings}
-                  onInventoryChange={changeInventory}
-                  onInventoryResult={applyInventory}
-                  grain={grain}
-                />
-              </div>
-            ) : active.rows?.length === 0 ? (
-              <NoProducts />
-            ) : (
-              <EmptyState tab={tab} hasCatalog={hasCatalog} />
-            ))}
-
-          {tab === "accuracy" && (
-            <div className="flex min-h-0 flex-col gap-4">
-              <div className="flex items-center justify-between">
-                <SectionLabel>Accuracy</SectionLabel>
-                <Segmented
-                  value={accuracyView}
-                  onChange={setAccuracyView}
-                  options={[
-                    { id: "track", label: "Track record" },
-                    { id: "backtest", label: "Backtest" },
-                  ]}
-                />
-              </div>
-              {accuracyView === "track" ? (
-                <Ledger reloadToken={ledgerToken} />
-              ) : active.busy ? (
-                <RunningState tab={tab} />
-              ) : active.rows?.length > 0 ? (
-                <AccuracyResults rows={active.rows} />
-              ) : active.rows?.length === 0 ? (
-                <NoProducts />
-              ) : (
-                <EmptyState tab={tab} hasCatalog={hasCatalog} />
-              )}
-            </div>
-          )}
-        </main>
-      </div>
+      {showImport && (
+        <Modal title="Sync sales" onClose={() => setShowImport(false)}>
+          <ImportPanel importing={importing} onImport={doImport} onReject={(m) => setForecast((s) => ({ ...s, error: m }))} rangeLabel={rangeLabel} products={catalog?.products} />
+        </Modal>
+      )}
+      {showSettings && settings && (
+        <Modal title="Settings" onClose={() => setShowSettings(false)}>
+          <SettingsPanel settings={settings} service={service} onService={(lvl) => { setService(lvl); changeSettings({ service_level: lvl.value }); }} onChange={changeSettings} />
+        </Modal>
+      )}
+      {openSku && (() => {
+        const row = rows?.find((r) => (r.Sku || r.ProductName) === openSku);
+        return row ? (
+          <SkuDrawer row={row} settings={settings} service={service}
+            onClose={() => setOpenSku(null)}
+            onInventoryChange={changeInventory} onInventoryResult={applyInventory} />
+        ) : null;
+      })()}
     </div>
   );
 }
 
-function RunningState({ tab }) {
+/* ------------------------------------------------------------------ Top bar */
+function TopBar({ view, onView, hasCatalog, products, rangeLabel, onSync, onSettings, theme, onTheme }) {
   return (
-    <div className="space-y-5">
-      <div className="grid grid-cols-2 gap-px overflow-hidden rounded-xl border border-[var(--line)] bg-[var(--line)] sm:grid-cols-4">
-        {Array.from({ length: 4 }).map((_, i) => (
-          <div key={i} className="bg-[var(--surface)] px-4 py-3">
-            <div className="shimmer h-2.5 w-20 rounded bg-[var(--surface-3)]" />
-            <div className="shimmer mt-2.5 h-5 w-14 rounded bg-[var(--surface-3)]" />
-          </div>
+    <header className="sticky top-0 z-20 flex items-center gap-4 border-b border-[var(--line)] bg-[color-mix(in_srgb,var(--surface)_80%,transparent)] px-6 py-2.5 backdrop-blur-md">
+      <div className="flex items-center gap-2.5">
+        <Mark />
+        <span className="serif text-[20px] font-semibold">Insighta</span>
+      </div>
+      <div className="mx-1 h-5 w-px bg-[var(--line)]" />
+      <nav className="flex items-center gap-0.5">
+        {VIEWS.map((v) => (
+          <button key={v.id} onClick={() => onView(v.id)}
+            className={`rounded-lg px-3 py-1.5 text-[13px] font-semibold transition-colors ${
+              view === v.id || (view === "assistant" && v.id === "today")
+                ? "bg-accent-50 text-accent-700 dark:bg-accent-600/15 dark:text-accent-300"
+                : "text-[var(--ink-3)] hover:bg-[var(--surface-2)] hover:text-[var(--ink-2)]"}`}>
+            {v.label}
+          </button>
         ))}
-      </div>
-      <Card className="p-4">
-        <SectionLabel className="mb-3">
-          {tab === "accuracy"
-            ? "Scoring model accuracy"
-            : tab === "attention"
-              ? "Scanning your catalog"
-              : tab === "orderplan"
-                ? "Planning your buy"
-                : "Building your forecast"}
-        </SectionLabel>
-        <div className="flex h-40 items-end gap-2">
-          {[45, 70, 35, 85, 55, 65, 40, 75, 50, 60].map((h, i) => (
-            <div
-              key={i}
-              className="shimmer flex-1 rounded-t bg-[var(--surface-3)]"
-              style={{ height: `${h}%` }}
-            />
-          ))}
-        </div>
-      </Card>
-    </div>
-  );
-}
-
-function RunEmpty({
-  hasCatalog,
-  emptyResult,
-  onRun,
-  title = "See what needs your attention",
-  desc = "Scan your catalog to surface stockout risks, overdue deliveries, overstock, and sharp demand shifts — ranked by urgency.",
-  ctaLabel = "Scan my catalog",
-}) {
-  return (
-    <div className="flex h-full min-h-80 items-center justify-center">
-      <div className="max-w-sm text-center">
-        <div className="mx-auto flex size-11 items-center justify-center rounded-xl border border-[var(--line)] bg-[var(--surface)]">
-          <svg className="size-5 text-[var(--ink-3)]" viewBox="0 0 20 20" fill="none">
-            <path
-              d="M10 2.5a4.5 4.5 0 0 0-4.5 4.5c0 3.5-1.5 4.5-1.5 4.5h12s-1.5-1-1.5-4.5A4.5 4.5 0 0 0 10 2.5ZM8.5 15a1.5 1.5 0 0 0 3 0"
-              stroke="currentColor"
-              strokeWidth="1.5"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-            />
-          </svg>
-        </div>
-        <h2 className="mt-4 text-sm font-semibold">
-          {!hasCatalog ? "Your catalog is empty" : emptyResult ? "Nothing to plan yet" : title}
-        </h2>
-        <p className="mt-1.5 text-sm leading-relaxed text-[var(--ink-2)]">
-          {!hasCatalog
-            ? "Import a sales file to build your catalog, then run it to see what needs action."
-            : desc}
-        </p>
-        {hasCatalog && !emptyResult && (
-          <button
-            onClick={onRun}
-            className="mt-4 inline-flex items-center gap-2 rounded-lg bg-accent-500 px-4 py-2.5 text-sm font-medium text-white transition-colors hover:bg-accent-600"
-          >
-            {ctaLabel}
+      </nav>
+      <div className="ml-auto flex items-center gap-2.5">
+        {hasCatalog && (
+          <button onClick={onSync} title="Sync new sales"
+            className="hidden items-center gap-2 rounded-full border border-[var(--line)] px-3 py-1.5 text-xs font-semibold text-[var(--ink-2)] transition-colors hover:bg-[var(--surface-2)] md:inline-flex">
+            <span className="size-1.5 rounded-full bg-pos-500" />
+            <span className="tnum">{formatNumber(products)}</span> products
+            {rangeLabel && <span className="text-[var(--ink-3)]">· {rangeLabel}</span>}
           </button>
         )}
+        <IconBtn onClick={onSettings} title="Settings" label="Settings">
+          <svg viewBox="0 0 20 20" fill="none"><circle cx="10" cy="10" r="2.6" stroke="currentColor" strokeWidth="1.6" /><path d="M10 2.6v2.1M10 15.3v2.1M17.4 10h-2.1M4.7 10H2.6M15.2 4.8l-1.5 1.5M6.3 13.7l-1.5 1.5M15.2 15.2l-1.5-1.5M6.3 6.3 4.8 4.8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" /></svg>
+        </IconBtn>
+        <IconBtn onClick={onTheme} title={`Switch to ${theme === "dark" ? "light" : "dark"} mode`} label="Toggle theme">
+          {theme === "dark" ? <SunIcon /> : <MoonIcon />}
+        </IconBtn>
       </div>
-    </div>
+    </header>
   );
 }
 
-function EmptyState({ tab, hasCatalog }) {
+/* ------------------------------------------------------------------- Today */
+function Today({ forecast, settings, service, onInventoryResult, onRun, onAsk, onOpenForecast, onOpenSku }) {
+  if (forecast.busy) return <TodaySkeleton />;
+  if (!forecast.rows) return <ScanPrompt onRun={onRun} />;
   return (
-    <div className="flex h-full min-h-80 items-center justify-center">
-      <div className="max-w-sm text-center">
-        <div className="mx-auto flex size-11 items-center justify-center rounded-xl border border-[var(--line)] bg-[var(--surface)]">
-          <svg className="size-5 text-[var(--ink-3)]" viewBox="0 0 20 20" fill="none">
-            <path
-              d="M3 16.5V9M7.5 16.5V4M12 16.5v-5M16.5 16.5V7"
-              stroke="currentColor"
-              strokeWidth="1.7"
-              strokeLinecap="round"
-            />
-          </svg>
-        </div>
-        <h2 className="mt-4 text-sm font-semibold">
-          {!hasCatalog
-            ? "Your catalog is empty"
-            : tab === "forecast"
-              ? "No forecast yet"
-              : "No accuracy report yet"}
-        </h2>
-        <p className="mt-1.5 text-sm leading-relaxed text-[var(--ink-2)]">
-          {!hasCatalog
-            ? "Import a CSV or Excel file of monthly sales to build your catalog. After that, the app remembers it — you just sync new sales."
-            : tab === "forecast"
-              ? "Pick a start month and length, then generate your forecast."
-              : "Pick a start month inside your history, then score the model against what actually happened."}
-        </p>
+    <div className="flex flex-col gap-7">
+      <Exceptions rows={forecast.rows} settings={settings} service={service}
+        onInventoryResult={onInventoryResult} onOpenForecast={onOpenForecast} onOpenSku={onOpenSku} />
+      <AskInsighta onAsk={onAsk} />
+      <div>
+        <SectionLabel className="mb-2.5">Portfolio</SectionLabel>
+        <KpiStrip rows={forecast.rows} service={service} settings={settings} />
       </div>
     </div>
   );
 }
 
-// Compact numeric field for the inventory defaults - commits on blur/Enter so a
-// keystroke mid-typing doesn't fire a save (and re-forecast-free recompute).
-function NumField({ label, title, value, suffix, onCommit }) {
+const PROMPTS = [
+  "What should I reorder this week?",
+  "Which SKUs are overstocked?",
+  "Plan a $20k buy",
+  "How accurate were we last quarter?",
+];
+function AskInsighta({ onAsk }) {
+  return (
+    <section className="rounded-2xl border border-[var(--line)] bg-[var(--surface-2)] p-7">
+      <div className="serif text-[20px] font-semibold">Ask Insighta</div>
+      <div className="mt-1.5 flex items-center gap-2 text-xs text-[var(--ink-3)]">
+        <svg className="size-3.5 text-pos-500" viewBox="0 0 20 20" fill="none"><path d="M4 10.5 8.5 15 16 6" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" /></svg>
+        Every figure is computed from your data — Insighta phrases the answer, it never invents a number.
+      </div>
+      <button onClick={onAsk}
+        className="mt-4 flex w-full items-center gap-3.5 rounded-xl border-[1.5px] bg-[var(--surface)] px-5 py-4 text-left transition-colors hover:border-accent-500"
+        style={{ borderColor: "color-mix(in srgb, var(--color-accent-600) 38%, var(--line))" }}>
+        <svg className="size-6 shrink-0 text-accent-600" viewBox="0 0 24 24" fill="none"><path d="M12 3l1.8 4.9L18.7 9.7 13.8 11.5 12 16.4 10.2 11.5 5.3 9.7 10.2 7.9 12 3Z" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" /><path d="M18.5 15.5l.8 2.2 2.2.8-2.2.8-.8 2.2-.8-2.2-2.2-.8 2.2-.8.8-2.2Z" fill="currentColor" /></svg>
+        <span className="flex-1 text-base text-[var(--ink-3)]">Ask anything about your inventory, forecasts, or what to do next…</span>
+      </button>
+      <div className="mt-4 flex flex-wrap gap-2.5">
+        {PROMPTS.map((p) => (
+          <button key={p} onClick={onAsk}
+            className="rounded-full border border-[var(--line)] bg-[var(--surface)] px-3.5 py-2 text-[13px] font-medium text-[var(--ink-2)] transition-colors hover:border-accent-500 hover:text-accent-600">
+            {p}
+          </button>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function AssistantView({ rows, settings, service, catalog, onBack }) {
+  return (
+    <div className="flex flex-col gap-4">
+      <button onClick={onBack} className="inline-flex w-fit items-center gap-1.5 text-[13px] font-semibold text-[var(--ink-3)] hover:text-[var(--ink)]">
+        <svg className="size-4" viewBox="0 0 20 20" fill="none"><path d="M12 5l-5 5 5 5" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" /></svg>
+        Back to Today
+      </button>
+      {rows?.length ? (
+        <Assistant rows={rows} settings={settings} service={service} catalog={catalog} />
+      ) : (
+        <Empty title="Ask Insighta" desc="Scan your catalog first, then ask about what needs you, how a product's doing, or what to reorder." />
+      )}
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------------- Forecast */
+function ForecastView({ forecast, settings, service, setService, changeSettings, changeInventory, applyInventory, grain, onRun }) {
+  if (forecast.busy) return <TodaySkeleton />;
+  if (!forecast.rows?.length) return <ScanPrompt onRun={onRun} title="No forecast yet" />;
+  return (
+    <div className="flex flex-col gap-5">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <SectionLabel>Inventory plan</SectionLabel>
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5">
+          <NumField label="Lead time" value={settings?.default_lead_time_days ?? 14} suffix="d" onCommit={(v) => changeSettings({ default_lead_time_days: v })} />
+          <NumField label="Review every" value={settings?.review_period_days ?? 7} suffix="d" onCommit={(v) => changeSettings({ review_period_days: v })} />
+          <label className="inline-flex items-center gap-1.5 text-xs text-[var(--ink-3)]">
+            <span>Service level</span>
+            <Select className="w-auto py-1" value={service.value}
+              onChange={(e) => { const lvl = SERVICE_LEVELS.find((s) => s.value === Number(e.target.value)); setService(lvl); changeSettings({ service_level: lvl.value }); }}>
+              {SERVICE_LEVELS.map((s) => (<option key={s.value} value={s.value}>{s.label}</option>))}
+            </Select>
+          </label>
+        </div>
+      </div>
+      <KpiStrip rows={forecast.rows} service={service} settings={settings} />
+      <div className="rounded-2xl border border-[var(--line)] bg-[var(--surface)] p-4"><ForecastChart rows={forecast.rows} service={service} settings={settings} /></div>
+      <ResultsTable rows={forecast.rows} service={service} setService={setService} settings={settings}
+        onInventoryChange={changeInventory} onInventoryResult={applyInventory} grain={grain} />
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------- Track record */
+function TrackView({ trackView, setTrackView, accuracy, ledgerToken, onRunBacktest }) {
+  return (
+    <div className="flex flex-col gap-4">
+      <div className="flex items-center justify-between">
+        <SectionLabel>{trackView === "backtest" ? "Backtest" : ""}</SectionLabel>
+        <Segmented value={trackView} onChange={setTrackView}
+          options={[{ id: "track", label: "Track record" }, { id: "backtest", label: "Backtest" }]} />
+      </div>
+      {trackView === "track" ? (
+        <Ledger reloadToken={ledgerToken} />
+      ) : accuracy.busy ? (
+        <TodaySkeleton />
+      ) : accuracy.rows?.length ? (
+        <AccuracyResults rows={accuracy.rows} />
+      ) : (
+        <div className="flex flex-col items-center gap-3 rounded-2xl border border-[var(--line)] bg-[var(--surface)] p-12 text-center">
+          <p className="max-w-sm text-sm text-[var(--ink-2)]">Score the model against what actually happened in your history — an honest, out-of-sample backtest.</p>
+          <Button onClick={onRunBacktest}>Run backtest</Button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------ small pieces */
+function Section({ title, desc, busy, rows, onRun, children }) {
+  if (busy) return <TodaySkeleton />;
+  if (!rows?.length) return <ScanPrompt onRun={onRun} title={`No data for ${title.toLowerCase()} yet`} desc={desc} />;
+  return (
+    <div className="flex flex-col gap-4">
+      <div><SectionLabel className="mb-1">{title}</SectionLabel>{desc && <p className="max-w-2xl text-sm text-[var(--ink-2)]">{desc}</p>}</div>
+      {children}
+    </div>
+  );
+}
+
+function IconBtn({ onClick, title, label, children }) {
+  return (
+    <button onClick={onClick} title={title} aria-label={label}
+      className="grid size-9 place-items-center rounded-lg border border-[var(--line)] bg-[var(--surface)] text-[var(--ink-2)] transition-colors hover:bg-[var(--surface-2)] hover:text-[var(--ink)] [&_svg]:size-[17px]">
+      {children}
+    </button>
+  );
+}
+
+function NumField({ label, value, suffix, onCommit }) {
   const [draft, setDraft] = useState(String(value ?? ""));
   useEffect(() => setDraft(String(value ?? "")), [value]);
   const commit = () => {
@@ -584,39 +406,24 @@ function NumField({ label, title, value, suffix, onCommit }) {
     else setDraft(String(value ?? ""));
   };
   return (
-    <label className="inline-flex items-center gap-1.5 text-xs text-[var(--ink-3)]" title={title}>
+    <label className="inline-flex items-center gap-1.5 text-xs text-[var(--ink-3)]">
       <span>{label}</span>
       <span className="inline-flex items-center rounded-md border border-[var(--line-strong)] bg-[var(--surface)] focus-within:border-accent-500">
-        <input
-          type="number"
-          min="0"
-          value={draft}
-          onChange={(e) => setDraft(e.target.value)}
-          onBlur={commit}
+        <input type="number" min="0" value={draft} onChange={(e) => setDraft(e.target.value)} onBlur={commit}
           onKeyDown={(e) => e.key === "Enter" && e.currentTarget.blur()}
-          className="tnum w-12 bg-transparent px-1.5 py-1 text-right text-[var(--ink)] outline-none"
-        />
+          className="tnum w-12 bg-transparent px-1.5 py-1 text-right text-[var(--ink)] outline-none" />
         {suffix ? <span className="pr-1.5 text-[var(--ink-3)]">{suffix}</span> : null}
       </span>
     </label>
   );
 }
 
-// Small segmented toggle (e.g. Track record / Backtest inside the Accuracy tab).
 function Segmented({ value, onChange, options }) {
   return (
-    <div className="inline-flex rounded-lg border border-[var(--line-strong)] bg-[var(--surface-2)] p-0.5 text-xs font-medium">
+    <div className="inline-flex rounded-lg border border-[var(--line-strong)] bg-[var(--surface-2)] p-0.5 text-xs font-semibold">
       {options.map((o) => (
-        <button
-          key={o.id}
-          type="button"
-          onClick={() => onChange(o.id)}
-          className={`rounded-md px-2.5 py-1 transition-colors ${
-            value === o.id
-              ? "bg-[var(--surface)] text-[var(--ink)] shadow-sm"
-              : "text-[var(--ink-3)] hover:text-[var(--ink-2)]"
-          }`}
-        >
+        <button key={o.id} type="button" onClick={() => onChange(o.id)}
+          className={`rounded-md px-2.5 py-1 transition-colors ${value === o.id ? "bg-[var(--surface)] text-[var(--ink)]" : "text-[var(--ink-3)] hover:text-[var(--ink-2)]"}`}>
           {o.label}
         </button>
       ))}
@@ -624,54 +431,130 @@ function Segmented({ value, onChange, options }) {
   );
 }
 
-function NoProducts() {
+function Modal({ title, onClose, children }) {
   return (
-    <Card className="p-10 text-center text-sm text-[var(--ink-3)]">
-      No products could be forecast from your catalog. Import a file with a{" "}
-      <span className="font-medium text-[var(--ink-2)]">Product Name</span> column and dated{" "}
-      <span className="font-medium text-[var(--ink-2)]">Quantity Sold …</span> columns.
-    </Card>
+    <div className="fixed inset-0 z-40 flex items-start justify-center bg-[rgba(20,17,12,0.28)] p-4 pt-24" onClick={onClose}>
+      <div className="w-full max-w-md rounded-2xl border border-[var(--line)] bg-[var(--surface)] [box-shadow:var(--shadow)]" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center justify-between border-b border-[var(--line)] px-5 py-3.5">
+          <span className="serif text-lg font-semibold">{title}</span>
+          <button onClick={onClose} aria-label="Close" className="grid size-8 place-items-center rounded-lg text-[var(--ink-3)] hover:bg-[var(--surface-2)] hover:text-[var(--ink)]">
+            <svg className="size-4" viewBox="0 0 20 20" fill="none"><path d="M5 5l10 10M15 5L5 15" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" /></svg>
+          </button>
+        </div>
+        <div className="p-5">{children}</div>
+      </div>
+    </div>
   );
 }
 
+function ImportPanel({ importing, onImport, onReject, rangeLabel, products }) {
+  const [file, setFile] = useState(null);
+  return (
+    <div className="flex flex-col gap-3">
+      {products != null && (
+        <p className="text-sm text-[var(--ink-2)]">
+          Your catalog has <b className="text-[var(--ink)]">{formatNumber(products)}</b> products{rangeLabel ? ` (${rangeLabel})` : ""}. Drop a newer sales export and it merges in — the app re-scans automatically.
+        </p>
+      )}
+      <FileDrop file={file} onSelect={setFile} onReject={onReject} />
+      <Button disabled={!file || importing} onClick={() => file && onImport(file)}>
+        {importing ? "Syncing…" : "Sync sales"}
+      </Button>
+    </div>
+  );
+}
+
+function SettingsPanel({ settings, service, onService, onChange }) {
+  return (
+    <div className="flex flex-col gap-4">
+      <SettingRow label="Default lead time" hint="Typical supplier resupply time. Products can override it.">
+        <NumField label="" value={settings.default_lead_time_days ?? 14} suffix="d" onCommit={(v) => onChange({ default_lead_time_days: v })} />
+      </SettingRow>
+      <SettingRow label="Review every" hint="How often you reorder. Orders must cover lead time plus this.">
+        <NumField label="" value={settings.review_period_days ?? 7} suffix="d" onCommit={(v) => onChange({ review_period_days: v })} />
+      </SettingRow>
+      <SettingRow label="Service level" hint="Probability of not stocking out. Higher = more safety stock.">
+        <Select className="w-auto py-1" value={service.value} onChange={(e) => onService(SERVICE_LEVELS.find((s) => s.value === Number(e.target.value)))}>
+          {SERVICE_LEVELS.map((s) => (<option key={s.value} value={s.value}>{s.label}</option>))}
+        </Select>
+      </SettingRow>
+      <SettingRow label="Holding cost / yr" hint="Annual cost to hold a unit, as a fraction of its cost.">
+        <NumField label="" value={Math.round((settings.holding_cost_rate ?? 0.25) * 100)} suffix="%" onCommit={(v) => onChange({ holding_cost_rate: v / 100 })} />
+      </SettingRow>
+    </div>
+  );
+}
+function SettingRow({ label, hint, children }) {
+  return (
+    <div className="flex items-start justify-between gap-4">
+      <div><div className="text-sm font-semibold">{label}</div><div className="mt-0.5 text-xs text-[var(--ink-3)]">{hint}</div></div>
+      <div className="shrink-0">{children}</div>
+    </div>
+  );
+}
+
+/* --------------------------------------------------------------- states */
+function ScanPrompt({ onRun, title = "See what needs you", desc = "Scan your catalog to surface stockout risks, overdue deliveries, overstock, and sharp demand shifts — ranked by dollars at risk." }) {
+  return (
+    <div className="flex min-h-80 items-center justify-center">
+      <div className="max-w-sm text-center">
+        <div className="mx-auto grid size-12 place-items-center rounded-2xl border border-[var(--line)] bg-[var(--surface)] text-[var(--ink-3)]">
+          <svg className="size-6" viewBox="0 0 20 20" fill="none"><path d="M10 2.5a4.5 4.5 0 0 0-4.5 4.5c0 3.5-1.5 4.5-1.5 4.5h12s-1.5-1-1.5-4.5A4.5 4.5 0 0 0 10 2.5ZM8.5 15a1.5 1.5 0 0 0 3 0" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" /></svg>
+        </div>
+        <h2 className="serif mt-4 text-xl font-semibold">{title}</h2>
+        <p className="mt-2 text-sm leading-relaxed text-[var(--ink-2)]">{desc}</p>
+        <Button className="mt-5" onClick={onRun}>Scan my catalog</Button>
+      </div>
+    </div>
+  );
+}
+
+function FirstRun({ onImport }) {
+  return (
+    <div className="flex min-h-80 items-center justify-center">
+      <div className="max-w-sm text-center">
+        <div className="mx-auto grid size-12 place-items-center rounded-2xl border border-[var(--line)] bg-[var(--surface)] text-[var(--ink-3)]">
+          <svg className="size-6" viewBox="0 0 24 24" fill="none"><path d="M12 15.5V4m0 0L7.5 8.5M12 4l4.5 4.5" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" /><path d="M4 15v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" /></svg>
+        </div>
+        <h2 className="serif mt-4 text-xl font-semibold">Welcome to Insighta</h2>
+        <p className="mt-2 text-sm leading-relaxed text-[var(--ink-2)]">Import a CSV or Excel of your sales history to build your catalog. After that the app remembers it — you just sync new sales.</p>
+        <Button className="mt-5" onClick={onImport}>Import sales</Button>
+      </div>
+    </div>
+  );
+}
+
+function Empty({ title, desc }) {
+  return (
+    <div className="flex min-h-60 items-center justify-center rounded-2xl border border-[var(--line)] bg-[var(--surface)]">
+      <div className="max-w-sm text-center"><h2 className="serif text-lg font-semibold">{title}</h2><p className="mt-1.5 text-sm text-[var(--ink-2)]">{desc}</p></div>
+    </div>
+  );
+}
+
+function TodaySkeleton() {
+  return (
+    <div className="flex flex-col gap-6">
+      <div className="shimmer h-9 w-56 rounded-lg bg-[var(--surface-3)]" />
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">{Array.from({ length: 4 }).map((_, i) => (<div key={i} className="h-20 rounded-xl border border-[var(--line)] bg-[var(--surface)]"><div className="shimmer m-3.5 h-3 w-20 rounded bg-[var(--surface-3)]" /><div className="shimmer mx-3.5 h-6 w-14 rounded bg-[var(--surface-3)]" /></div>))}</div>
+      <div className="rounded-2xl border border-[var(--line)] bg-[var(--surface)] p-5"><div className="shimmer h-40 rounded bg-[var(--surface-3)]" /></div>
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------- marks */
 function Mark() {
   return (
-    <svg className="size-6" viewBox="0 0 28 28" fill="none" aria-hidden="true">
-      <rect width="28" height="28" rx="7" className="fill-accent-500" />
-      <path
-        d="M7.5 18.5 12 13l3.5 3.5L20.5 9"
-        stroke="white"
-        strokeWidth="2.1"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
+    <svg className="size-7" viewBox="0 0 28 28" fill="none" aria-hidden="true">
+      <rect width="28" height="28" rx="8" className="fill-accent-600" />
+      <path d="M6 18.5 10.5 13.5 13.7 16.5 18.7 9.5" stroke="white" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" />
+      <circle cx="19.4" cy="8.9" r="1.7" fill="white" />
     </svg>
   );
 }
-
 function SunIcon() {
-  return (
-    <svg className="size-4.5" viewBox="0 0 20 20" fill="none">
-      <circle cx="10" cy="10" r="3.6" stroke="currentColor" strokeWidth="1.5" />
-      <path
-        d="M10 2v1.6M10 16.4V18M18 10h-1.6M3.6 10H2M15.7 4.3l-1.1 1.1M5.4 14.6l-1.1 1.1M15.7 15.7l-1.1-1.1M5.4 5.4 4.3 4.3"
-        stroke="currentColor"
-        strokeWidth="1.5"
-        strokeLinecap="round"
-      />
-    </svg>
-  );
+  return (<svg viewBox="0 0 20 20" fill="none"><circle cx="10" cy="10" r="3.6" stroke="currentColor" strokeWidth="1.5" /><path d="M10 2v1.6M10 16.4V18M18 10h-1.6M3.6 10H2M15.7 4.3l-1.1 1.1M5.4 14.6l-1.1 1.1M15.7 15.7l-1.1-1.1M5.4 5.4 4.3 4.3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" /></svg>);
 }
-
 function MoonIcon() {
-  return (
-    <svg className="size-4.5" viewBox="0 0 20 20" fill="none">
-      <path
-        d="M16.5 11.8A7 7 0 0 1 8.2 3.5a7 7 0 1 0 8.3 8.3Z"
-        stroke="currentColor"
-        strokeWidth="1.5"
-        strokeLinejoin="round"
-      />
-    </svg>
-  );
+  return (<svg viewBox="0 0 20 20" fill="none"><path d="M16.5 11.8A7 7 0 0 1 8.2 3.5a7 7 0 1 0 8.3 8.3Z" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" /></svg>);
 }
