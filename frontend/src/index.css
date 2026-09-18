@@ -5,50 +5,77 @@
 @custom-variant dark (&:where(.dark, .dark *));
 
 @theme {
-  --font-sans: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
-  --font-mono: ui-monospace, "SF Mono", "Cascadia Mono", "Roboto Mono", monospace;
+  /* Fraunces (editorial serif) for headline moments; Hanken Grotesk for the UI and
+     all data; JetBrains Mono for SKUs/codes. Loaded in index.html. */
+  --font-sans: "Hanken Grotesk", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-display: "Fraunces", Georgia, "Times New Roman", serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "SF Mono", "Cascadia Mono", monospace;
 
-  --color-accent-50: #eef4ff;
-  --color-accent-100: #d9e6ff;
-  --color-accent-200: #bcd3ff;
-  --color-accent-300: #8eb6ff;
-  --color-accent-400: #598eff;
-  --color-accent-500: #3366f2;
-  --color-accent-600: #2049d6;
-  --color-accent-700: #1b3aad;
-  --color-accent-800: #1c338a;
-  --color-accent-900: #1c2f6d;
+  /* Primary — evergreen. The colour of margin protected, of "in the black":
+     a reason, not the generic AI indigo. 600 is the button fill. */
+  --color-accent-50: #eaf3ee;
+  --color-accent-100: #d4e7dd;
+  --color-accent-200: #a9cfbb;
+  --color-accent-300: #79b198;
+  --color-accent-400: #46946f;
+  --color-accent-500: #2f8a68;
+  --color-accent-600: #1f6b4f;
+  --color-accent-700: #195740;
+  --color-accent-800: #164634;
+  --color-accent-900: #123829;
 
-  --color-pos-500: #12855f;
+  /* Health / growth — a green distinct from the pine brand. */
+  --color-pos-500: #0f7d5b;
   --color-pos-400: #34d399;
-  --color-neg-500: #c2400f;
-  --color-neg-400: #fb923c;
+  /* Risk / money-at-risk — a warm terracotta red, not the generic error-red. */
+  --color-neg-500: #c8442e;
+  --color-neg-400: #e2705a;
 }
 
 :root {
   color-scheme: light;
+  /* Warm neutrals — a paper-like ground, not cold blue-grey. */
   --surface: #ffffff;
-  --surface-2: #f7f8fa;
-  --surface-3: #eef0f4;
-  --page: #f2f4f7;
-  --line: #dfe3ea;
-  --line-strong: #c8cfda;
-  --ink: #10131a;
-  --ink-2: #4a5364;
-  --ink-3: #79839a;
+  --surface-2: #faf9f7;
+  --surface-3: #f1efea;
+  --page: #f4f2ee;
+  --line: #e8e5df;
+  --line-strong: #d6d2c9;
+  --ink: #1b1a17;
+  --ink-2: #57534b;
+  --ink-3: #8a847a;
+  /* Flat, editorial surfaces — structure comes from hairlines, not floating cards.
+     Elevation is reserved for things that truly float (drawer, menus). */
+  --shadow-sm: none;
+  --shadow: 0 1px 3px color-mix(in srgb, #2a2720 6%, transparent),
+    0 18px 40px -22px color-mix(in srgb, #2a2720 28%, transparent);
+  --shadow-lg: 0 2px 6px color-mix(in srgb, #2a2720 8%, transparent),
+    0 28px 56px -24px color-mix(in srgb, #2a2720 30%, transparent);
 }
 
 .dark {
   color-scheme: dark;
-  --surface: #14171d;
-  --surface-2: #191d25;
-  --surface-3: #212632;
-  --page: #0c0e13;
-  --line: #262c38;
-  --line-strong: #39424f;
-  --ink: #eef1f6;
-  --ink-2: #a3adbf;
-  --ink-3: #6f7b8f;
+  --surface: #1a1813;
+  --surface-2: #211e19;
+  --surface-3: #2b2721;
+  --page: #100e0b;
+  --line: #2e2a24;
+  --line-strong: #453f37;
+  --ink: #f3f0ea;
+  --ink-2: #b2aca0;
+  --ink-3: #7a746a;
+  /* Lighten the evergreen ramp so accents read on the dark ground. */
+  --color-accent-600: #3fa07a;
+  --color-accent-500: #58b892;
+  --color-accent-400: #6cc4a1;
+  --color-accent-50: #17281f;
+  --color-accent-100: #1c3327;
+  --color-pos-500: #34d399;
+  --color-neg-500: #e2705a;
+  --color-neg-400: #ea8a77;
+  --shadow-sm: none;
+  --shadow: 0 2px 6px rgba(0, 0, 0, 0.4), 0 22px 46px -22px rgba(0, 0, 0, 0.7);
+  --shadow-lg: 0 4px 10px rgba(0, 0, 0, 0.45), 0 30px 60px -24px rgba(0, 0, 0, 0.78);
 }
 
 html,
@@ -63,17 +90,30 @@ body {
   color: var(--ink);
   font-family: var(--font-sans);
   -webkit-font-smoothing: antialiased;
-  font-feature-settings: "cv02", "cv03", "cv04", "tnum";
+  text-rendering: optimizeLegibility;
 }
 
 /* Tabular figures everywhere numbers are compared down a column. */
 .tnum {
   font-variant-numeric: tabular-nums;
+  letter-spacing: -0.01em;
+}
+
+/* Tight, deliberate display headings. */
+.display {
+  letter-spacing: -0.02em;
+}
+
+/* Editorial serif — titles and names only, never data. */
+.serif {
+  font-family: var(--font-display);
+  font-weight: 500;
+  letter-spacing: -0.01em;
 }
 
 ::-webkit-scrollbar {
-  width: 10px;
-  height: 10px;
+  width: 11px;
+  height: 11px;
 }
 ::-webkit-scrollbar-track {
   background: transparent;
@@ -108,4 +148,18 @@ body {
     transparent
   );
   animation: shimmer 1.6s infinite;
+}
+
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+.rise {
+  animation: rise 0.34s cubic-bezier(0.2, 0.7, 0.2, 1) both;
 }
