@@ -168,7 +168,9 @@ function ExceptionRow({ it, first, onInventoryResult, onOpenSku }) {
         </div>
       </div>
       <div className="flex shrink-0 items-center gap-3">
-        <span className="hidden text-xs text-[var(--ink-2)] sm:inline">{it.action}</span>
+        {!(it.type === "stockout" && it.order > 0) && (
+          <span className="hidden text-xs text-[var(--ink-2)] sm:inline">{it.action}</span>
+        )}
         {it.type === "stockout" && it.order > 0 && (
           <button
             onClick={order}

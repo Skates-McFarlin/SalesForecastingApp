@@ -263,14 +263,20 @@ function Today({ forecast, settings, service, onInventoryResult, onRun, onAsk, o
   if (forecast.busy) return <TodaySkeleton />;
   if (!forecast.rows) return <ScanPrompt onRun={onRun} />;
   return (
-    <div className="flex flex-col gap-7">
-      <Exceptions rows={forecast.rows} settings={settings} service={service}
-        onInventoryResult={onInventoryResult} onOpenForecast={onOpenForecast} onOpenSku={onOpenSku} />
-      <AskInsighta onAsk={onAsk} />
-      <div>
-        <SectionLabel className="mb-2.5">Portfolio</SectionLabel>
-        <KpiStrip rows={forecast.rows} service={service} settings={settings} />
+    <div className="grid gap-x-8 gap-y-7 lg:grid-cols-[minmax(0,1fr)_384px]">
+      <div className="flex min-w-0 flex-col gap-7">
+        <Exceptions rows={forecast.rows} settings={settings} service={service}
+          onInventoryResult={onInventoryResult} onOpenForecast={onOpenForecast} onOpenSku={onOpenSku} />
+        <div>
+          <SectionLabel className="mb-2.5">Portfolio</SectionLabel>
+          <KpiStrip rows={forecast.rows} service={service} settings={settings} />
+        </div>
       </div>
+      {/* The assistant rides alongside as a co-pilot, staying in view however long
+          the triage list runs, rather than sinking to the bottom of the page. */}
+      <aside className="h-fit lg:sticky lg:top-[72px]">
+        <AskInsighta onAsk={onAsk} />
+      </aside>
     </div>
   );
 }
