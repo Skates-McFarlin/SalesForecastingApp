@@ -17,17 +17,25 @@ export default function OrderPlan({ rows, settings, service, onInventoryResult, 
     [rows, settings, service]
   );
   const ideal = Math.round(full.idealCost);
+  // Amazon restock/capacity ceiling (cubic feet of inbound). Only offered when
+  // the catalog carries item volumes - i.e. an FBA seller imported the storage
+  // report; a cash-only seller sees exactly the plan they saw before.
+  const hasCapacity = full.haveVolume > 0 && full.idealVol > 0;
+  const idealCap = Math.ceil(full.idealVol);
 
   const [budget, setBudget] = useState(null);
+  const [capacity, setCapacity] = useState(null);
   useEffect(() => {
-    // Start fully funded whenever the underlying plan changes.
+    // Start fully funded / uncapped whenever the underlying plan changes.
     setBudget(ideal);
-  }, [ideal]);
+    setCapacity(idealCap);
+  }, [ideal, idealCap]);
 
   const b = budget == null ? ideal : budget;
+  const cap = !hasCapacity ? Infinity : capacity == null ? idealCap : capacity;
   const plan = useMemo(
-    () => optimizeBudget(rows, settings, service.z, b),
-    [rows, settings, service, b]
+    () => optimizeBudget(rows, settings, service.z, b, cap),
+    [rows, settings, service, b, cap]
   );
 
   // Every open PO across the catalog, so Buying is where orders live end to end.
@@ -76,8 +84,9 @@ export default function OrderPlan({ rows, settings, service, onInventoryResult, 
       <div>
         <SectionLabel className="mb-1">Budget plan</SectionLabel>
         <p className="max-w-2xl text-sm leading-relaxed text-[var(--ink-2)]">
-          Fully restocking the catalog costs <span className="font-medium text-[var(--ink)]">{money(ideal)}</span>.
-          Set a budget and the app spends it where it buys the most service — using each product’s demand
+          Fully restocking the catalog costs <span className="font-medium text-[var(--ink)]">{money(ideal)}</span>
+          {hasCapacity && <> and sends <span className="font-medium text-[var(--ink)]">{formatNumber(idealCap)} {full.capUnit}</span> into FBA</>}.
+          Set a budget{hasCapacity && " and an Amazon restock limit"} and the app spends {hasCapacity ? "both" : "it"} where {hasCapacity ? "they buy" : "it buys"} the most service — using each product’s demand
           distribution, not a flat split.
         </p>
       </div>
@@ -119,8 +128,48 @@ export default function OrderPlan({ rows, settings, service, onInventoryResult, 
         />
       </Card>
 
-      <div className="grid grid-cols-2 gap-px overflow-hidden rounded-xl border border-[var(--line)] bg-[var(--line)] sm:grid-cols-4">
+      {hasCapacity && (
+        <Card className="p-4">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <label className="text-sm font-medium">Amazon restock limit</label>
+              <div className="text-[11px] text-[var(--ink-3)]">
+                Inbound capacity Amazon will accept ({full.capUnit}) — set by your IPI score in Capacity Manager.
+              </div>
+            </div>
+            <div className="flex items-center gap-2">
+              <input
+                type="number"
+                min="0"
+                max={idealCap}
+                value={Math.round(cap)}
+                onChange={(e) => setCapacity(Math.max(0, Math.min(idealCap, Number(e.target.value))))}
+                className="tnum w-32 rounded-md border border-[var(--line-strong)] bg-[var(--surface)] px-2 py-1 text-right text-sm outline-none focus:border-accent-500"
+              />
+              <span className="text-sm text-[var(--ink-3)]">{full.capUnit}</span>
+            </div>
+          </div>
+          <input
+            type="range"
+            min="0"
+            max={idealCap}
+            step={Math.max(1, Math.round(idealCap / 200))}
+            value={Math.round(cap)}
+            onChange={(e) => setCapacity(Number(e.target.value))}
+            className="mt-3 w-full accent-accent-500"
+          />
+        </Card>
+      )}
+
+      <div className={`grid grid-cols-2 gap-px overflow-hidden rounded-xl border border-[var(--line)] bg-[var(--line)] ${hasCapacity ? "sm:grid-cols-5" : "sm:grid-cols-4"}`}>
         <Stat label="Allocated" value={money(plan.allocatedSpend)} sub={`of ${money(ideal)} needed`} accent />
+        {hasCapacity && (
+          <Stat
+            label="Capacity used"
+            value={`${formatNumber(Math.round(plan.allocatedVol))} ${full.capUnit}`}
+            sub={plan.capBinding ? `restock limit binding` : `of ${formatNumber(idealCap)} available`}
+          />
+        )}
         <Stat label="Coverage" value={pct(plan.coverage)} sub={`${formatNumber(plan.counts.funded)} funded · ${formatNumber(plan.counts.partial)} partial`} />
         <Stat
           label="Expected service"

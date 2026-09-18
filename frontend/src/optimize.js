@@ -9,6 +9,15 @@ import { reorder } from "./components/ui";
 // knapsack: fund every unit whose value-per-dollar (1-F(y))/cost >= lambda, and
 // binary-search lambda to hit the budget (Lagrangian water-filling). Validated to
 // match unit-by-unit greedy and beat proportional allocation.
+//
+// FBA extension: an Amazon seller is capped not only by cash but by a restock /
+// capacity limit - how much inbound VOLUME (cubic feet) Amazon's Capacity Manager
+// will accept, set by the IPI score. That's a second knapsack constraint on the
+// SAME allocation. With two constraints a unit is worth funding when its value
+// clears a combined price lamCash*cost + lamVol*size; we nest the water-filling
+// (bisect the volume price, and for each solve the cash price to the budget) so
+// both caps are met at once. With capacity = Infinity this collapses exactly to
+// the single-constraint cash plan above.
 
 // --- standard normal helpers (no deps) ------------------------------------
 function erf(x) {
@@ -47,13 +56,38 @@ function expShortage(y, mu, sigma) {
   return sigma * (normPdf(k) - k * (1 - normCdf(k)));
 }
 
-function targetY(it, lam) {
-  const val = 1 - lam * it.cost;
+// Order-up-to for a SKU at combined shadow prices: fund a unit while its
+// marginal value 1-F(y) still clears lamCash*cost + lamVol*size.
+function targetY(it, lamCash, lamVol = 0) {
+  const val = 1 - lamCash * it.cost - lamVol * it.size;
   if (val <= 0) return it.q0; // no unit is worth funding at this price
   return Math.min(it.S, Math.max(it.q0, it.mu + it.sigma * normInv(val)));
 }
 
-export function optimizeBudget(rows, settings, z, budget) {
+function median(xs) {
+  if (!xs.length) return 0;
+  const s = [...xs].sort((a, b) => a - b);
+  const m = s.length >> 1;
+  return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
+}
+
+// The size (inbound cubic feet per unit) each SKU consumes against a restock cap,
+// and whether the catalog even carries volumes. When most SKUs have a real item
+// volume we cap in cubic feet (Amazon's Capacity Manager unit), filling a missing
+// volume with the catalog median so it still consumes capacity; otherwise the cap
+// degrades to a plain unit count (size = 1).
+export function capacityBasis(items) {
+  const vols = items.map((it) => it.vol).filter((v) => v > 0);
+  if (vols.length >= Math.max(1, items.length * 0.5)) {
+    const med = median(vols) || 1;
+    for (const it of items) it.size = it.vol > 0 ? it.vol : med;
+    return { unit: "cu ft", haveVolume: vols.length };
+  }
+  for (const it of items) it.size = 1;
+  return { unit: "units", haveVolume: vols.length };
+}
+
+export function optimizeBudget(rows, settings, z, budget, capacity = Infinity) {
   const R = settings?.review_period_days ?? 7;
   const items = [];
   let noCost = 0;
@@ -79,32 +113,61 @@ export function optimizeBudget(rows, settings, z, budget) {
     const S = Math.max(q0, d.orderUpTo);
     const ideal = Math.max(0, S - q0);
     if (ideal <= 0) continue; // already covered - no order needed
-    items.push({ key: row.Sku || row.ProductName, name: row.ProductName, sku: row.Sku, cost, mu, sigma, q0, S, ideal });
+    const vol = Math.max(0, Number(row.ItemVolumeCuft) || 0);
+    items.push({ key: row.Sku || row.ProductName, name: row.ProductName, sku: row.Sku, cost, mu, sigma, q0, S, ideal, vol });
   }
 
+  const cap = capacityBasis(items); // assigns it.size (cu ft or units per unit)
   const idealCost = items.reduce((a, it) => a + it.cost * it.ideal, 0);
+  const idealVol = items.reduce((a, it) => a + it.size * it.ideal, 0);
+  const capped = Number.isFinite(capacity);
 
   let ys;
-  if (budget >= idealCost || items.length === 0) {
-    ys = items.map((it) => it.S); // budget covers everything
+  if (items.length === 0 || (budget >= idealCost && (!capped || capacity >= idealVol))) {
+    ys = items.map((it) => it.S); // both caps cover everything
   } else {
-    const minCost = Math.min(...items.map((i) => i.cost));
-    let lo = 0, hi = 1 / minCost; // hi funds nothing beyond position
-    for (let k = 0; k < 80; k++) {
-      const mid = (lo + hi) / 2;
-      const spend = items.reduce((a, it) => a + it.cost * (targetY(it, mid) - it.q0), 0);
-      if (spend > budget) lo = mid;
-      else hi = mid;
+    const spendAt = (lc, lv) => items.reduce((a, it) => a + it.cost * (targetY(it, lc, lv) - it.q0), 0);
+    const volAt = (lc, lv) => items.reduce((a, it) => a + it.size * (targetY(it, lc, lv) - it.q0), 0);
+    const cashHi = 1 / Math.min(...items.map((i) => i.cost)); // funds nothing
+    const volHi = 1 / Math.min(...items.map((i) => i.size));
+
+    // Cash price that spends exactly the budget at a given volume price (spend is
+    // monotone decreasing in lamCash); 0 when the budget doesn't bind there.
+    const solveCash = (lv) => {
+      if (spendAt(0, lv) <= budget) return 0;
+      let lo = 0, hi = cashHi;
+      for (let k = 0; k < 64; k++) {
+        const mid = (lo + hi) / 2;
+        if (spendAt(mid, lv) > budget) lo = mid;
+        else hi = mid;
+      }
+      return hi;
+    };
+
+    let lamVol = 0;
+    if (capped && volAt(solveCash(0), 0) > capacity) {
+      // Capacity binds even after the budget is spent: raise the volume price
+      // (which shrinks every order, hence total volume) to meet the cap, keeping
+      // the budget solved at each step.
+      let lo = 0, hi = volHi;
+      for (let k = 0; k < 64; k++) {
+        const mid = (lo + hi) / 2;
+        if (volAt(solveCash(mid), mid) > capacity) lo = mid;
+        else hi = mid;
+      }
+      lamVol = hi;
     }
-    ys = items.map((it) => targetY(it, hi));
+    const lamCash = solveCash(lamVol);
+    ys = items.map((it) => targetY(it, lamCash, lamVol));
   }
 
-  let allocatedSpend = 0, shortAfter = 0, shortFull = 0, shortNone = 0, muTot = 0;
+  let allocatedSpend = 0, allocatedVol = 0, shortAfter = 0, shortFull = 0, shortNone = 0, muTot = 0;
   let funded = 0, partial = 0, unfunded = 0;
   const out = items.map((it, i) => {
     const allocated = Math.max(0, Math.round(ys[i] - it.q0));
     const spend = allocated * it.cost;
     allocatedSpend += spend;
+    allocatedVol += allocated * it.size;
     muTot += it.mu;
     shortAfter += expShortage(it.q0 + allocated, it.mu, it.sigma);
     shortFull += expShortage(it.S, it.mu, it.sigma);
@@ -132,5 +195,12 @@ export function optimizeBudget(rows, settings, z, budget) {
     counts: { funded, partial, unfunded },
     noCost,
     binding: budget < idealCost,
+    // FBA restock/capacity constraint (Amazon Capacity Manager).
+    capacity,
+    capUnit: cap.unit, // "cu ft" | "units"
+    idealVol,
+    allocatedVol,
+    capBinding: capped && capacity < idealVol,
+    haveVolume: cap.haveVolume,
   };
 }
