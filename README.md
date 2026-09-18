@@ -4,6 +4,8 @@ A desktop app that turns a spreadsheet of sales history into **per-product deman
 
 Unlike a one-shot forecasting tool, Insighta is **stateful**: it remembers every forecast it made and grades each one against what actually sold, so you get an honest, running track record of how far its forecasts run high or low and how often reality lands inside the stated range. Built with a React + Electron front end and a Python (Flask) forecasting engine, packaged into a single Windows installer.
 
+**Built for Amazon FBA sellers.** Insighta imports your Seller Central reports directly — the *All Orders* report, *FBA inventory*, *storage fees*, and *inventory age* — and reasons about the two-sided FBA squeeze: the monthly storage and 181-day aged-inventory surcharges that punish overstock, versus the lost sales that punish under-ordering. Because everything runs on your own machine, your sales and cost data never leave it and never pass through anyone else's servers.
+
 > **Status:** working desktop application (Windows). Upload an Excel/CSV of monthly *or* weekly sales and get forecasts, calibrated confidence ranges, reorder decisions, a budget-constrained order plan, and a backtested accuracy report — plus an assistant you can ask about your own numbers.
 
 ---
@@ -13,7 +15,8 @@ Unlike a one-shot forecasting tool, Insighta is **stateful**: it remembers every
 - **Per-SKU demand forecasting** — upload sales history (`.xlsx`/`.csv`, monthly or weekly), pick a horizon or a specific future window, and get a forecast for every product, not just an aggregate.
 - **Inventory decisions, not just numbers** — each forecast becomes a **reorder point**, an **order-up-to level**, and a **suggested order quantity** at a chosen service level (90 / 95 / 99%), grounded in on-hand stock, lead time, and costs you can edit inline.
 - **Attention view** — the landing screen ranks what actually needs a decision today: imminent stockouts, overdue purchase orders, demand shifts, and overstock — each with a one-click order action.
-- **Budget-constrained order plan** — given a spend cap, it allocates the budget across SKUs to buy the most service per dollar (a Lagrangian water-filling allocation over each product's demand distribution), with a live budget slider.
+- **FBA fee-aware overstock** — flags SKUs quietly bleeding money to Amazon storage fees, including the **181-day aged-inventory surcharge**, and ranks them by a year of projected fees so you know which excess to draw down first. It uses your imported storage/age numbers when present and a modeled estimate (from item volume and the published fee schedule) otherwise.
+- **Budget-constrained order plan** — given a spend cap — and, for FBA, an **Amazon restock/capacity limit** in cubic feet set by your IPI score — it allocates across SKUs to buy the most service per dollar *and* per cubic foot (a two-constraint Lagrangian water-filling over each product's demand distribution), with live sliders for both caps. Every suggested quantity is snapped to the SKU's **minimum order and case pack**, so the plan is actually orderable rather than a fractional ideal. Amazon exports carry no COGS, so a missing cost falls back to an estimate from the selling price (clearly flagged) until you import or type the real number.
 - **Purchase orders & learned lead time** — track orders on the way; the app learns each supplier's real resupply time from your order→arrival history instead of trusting a guessed number.
 - **A self-grading track record** — every forecast is logged, then reconciled against real sales as the window closes, so the app can show you which products it forecasts well, which run consistently high or low, and whether reality actually lands inside the stated range. (An earlier version auto-rescaled future forecasts from this history; measured on real data that made them *worse* — the ledger's honest job is accountability, not a self-tuning knob.)
 - **Price elasticity & what-if** — when the file includes prices, it estimates each product's price sensitivity and shows how demand would move if you changed the price.
@@ -113,11 +116,13 @@ Open `http://localhost:5173` and upload a sales file. (The forecasting models do
 
 ```bash
 cd backend
-pyinstaller run.spec        # freeze the Python backend -> backend/dist/run
+python -m PyInstaller run.spec   # freeze the Python backend -> backend/dist/run
 cd ../electron
 npm install
-npm run dist                # build the front end + package the installer
+npm run dist                     # build the front end + package the installer
 ```
+
+Use `python -m PyInstaller` (not a bare `pyinstaller` on PATH) so the freeze runs under the *same* interpreter that has the project's dependencies installed — if PATH resolves `pyinstaller` to a different Python, the build silently omits packages and the frozen backend crashes on boot. `npm run dist` rebuilds the front end but **not** the backend, so re-run the freeze whenever backend Python changes. Before packaging, smoke-test the frozen backend — run `backend/dist/run/run.exe` and confirm `http://127.0.0.1:5000/api/health` responds — since some import failures only surface in the frozen build.
 
 This produces a self-contained installer under `electron/dist-electron/` (`Insighta Setup <version>.exe`).
 
@@ -130,9 +135,12 @@ backend/    Flask API + forecasting engine
   app/forecasting/   ensemble, statistical, lightgbm, chronos,
                      intermittent, borrowed-shape, elasticity, conformal
   app/controllers/   forecasting, inventory, purchase orders, ledger,
-                     closed-loop learning, budget optimization, assistant
+                     closed-loop learning, budget optimization, assistant,
+                     Amazon Seller Central import (catalog_controller)
   app/models/        catalog, forecast runs, ledger, settings, purchase orders
 frontend/   React + Vite UI (Attention, Assistant, Forecast, Order plan, Accuracy)
+  src/optimize.js    two-constraint (cash + FBA capacity) budget allocator
+  src/fba.js         FBA carrying-cost model (storage + 181-day aged surcharge)
 electron/   desktop shell + electron-builder packaging config
 ```
 
@@ -147,6 +155,17 @@ An Excel or CSV file with a **Product Name** column (optionally a **Product ID (
 | Winter Coat | WIN-1001 | Winter Apparel | 120 | 95 | … | 89.00 | … |
 
 `Unit Price <period>` columns are optional and enable the price-elasticity features. On-hand stock, lead time, and cost fields can be supplied in the file or edited inline in the app.
+
+**Amazon Seller Central exports** import directly, no reshaping required:
+
+| Report | What it provides |
+|---|---|
+| **All Orders** (tab-delimited `.txt`) | per-transaction sales history (unit price recovered from the line total) |
+| **FBA inventory** (`.csv`) | current on-hand from `afn-fulfillable-quantity` |
+| **Storage Fees** (`.csv`) | real monthly storage fee and item volume per SKU |
+| **Inventory Age** (`.csv`) | units aged past 181 days, for the aged-inventory surcharge |
+
+An inventory-only sheet (e.g. a plain **SKU + Unit Cost** file) is detected and used to refresh just those fields, so you can drop in your COGS after a pure-Amazon import.
 
 ---
 
