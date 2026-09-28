@@ -1,4 +1,5 @@
 import os
+import secrets
 from pathlib import Path
 
 
@@ -15,7 +16,7 @@ def _sqlite_db_path():
 
 
 class Config:
-    SECRET_KEY = os.getenv("SECRET_KEY", "sales_forecasting_app")
+    SECRET_KEY = os.getenv("SECRET_KEY") or secrets.token_hex(32)
 
     SQLALCHEMY_DATABASE_URI = f"sqlite:///{_sqlite_db_path().as_posix()}"
     SQLALCHEMY_TRACK_MODIFICATIONS = False

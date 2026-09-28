@@ -31,7 +31,7 @@ Everything runs **locally and offline** (the forecasting models download once on
 
 Claims here are measured, not asserted — and the measurements that *didn't* go our way are reported too. The engine was validated on the public **[M5](https://www.kaggle.com/competitions/m5-forecasting-accuracy) Walmart retail dataset** — real, heavily intermittent demand — at both the app's grains: a stratified **~420 SKUs across 7 departments**, scored strictly **out-of-sample** (weekly also with a **4-cutoff rolling-origin backtest**). The metric is **MASE** (scale-free, handles zeros; **1.0 = a naive one-step forecast**, lower is better). Baselines are real methods, not strawmen: seasonal-naive, AutoETS, and the intermittent-demand specialists **Croston-SBA** and **TSB**.
 
-**1. It beats the standard baseline decisively — at both grains.** Insighta produces a better forecast than seasonal-naive on **80% of SKUs monthly and 77–85% weekly** (weekly holds in *every* quarter of the rolling-origin backtest, so it isn't a lucky window).
+**1. It beats the standard baseline decisively — at both grains.** Insighta produces a better forecast than seasonal-naive on **80% of SKUs monthly and 77–85% weekly** (weekly holds in *every* quarter of the rolling-origin backtest, so it isn't a lucky window). Its mean forecast error runs about **30% below seasonal-naive** at monthly grain (MASE 1.93 vs 2.72).
 
 **2. At monthly grain — the app's default — it beats a strong classical model outright.**
 
