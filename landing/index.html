@@ -1,0 +1,474 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>FBA Overstock Bleed</title>
+<meta name="description" content="See what your Amazon FBA overstock is costing you in storage and aged-inventory fees. Paste your Storage Fees or Inventory Age report - it's read right in your browser, nothing is uploaded.">
+<meta property="og:type" content="website">
+<meta property="og:title" content="FBA Overstock Bleed - what your FBA overstock costs you">
+<meta property="og:description" content="See what your Amazon FBA overstock is costing you in storage and aged-inventory fees. Paste your Storage Fees or Inventory Age report - it's read right in your browser, nothing is uploaded.">
+<meta name="twitter:card" content="summary">
+<meta name="twitter:title" content="FBA Overstock Bleed">
+<meta name="twitter:description" content="See what your Amazon FBA overstock is costing you in storage and aged-inventory fees. Paste your Storage Fees or Inventory Age report - it's read right in your browser, nothing is uploaded.">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='88'>&#128230;</text></svg>">
+<style>
+  :root{ color-scheme: light dark;
+    padding-top: env(safe-area-inset-top, 0px); padding-bottom: env(safe-area-inset-bottom, 0px); }
+  html,body{ margin:0; }
+  img{ max-width:100%; }
+  [hidden]{ display:none !important; }
+</style>
+<style>
+  :root{
+    --bg:#f4f5f6; --surface:#ffffff; --surface-2:#eceef0;
+    --ink:#181a1e; --ink-2:#4c525b; --ink-3:#8a9099;
+    --line:#e2e5e8; --line-strong:#cfd4d9;
+    --amber:#b45309; --red:#c62f2f; --teal:#0f766e;
+    --shadow:0 1px 2px rgba(20,22,26,.05), 0 8px 28px -14px rgba(20,22,26,.18);
+    --font:"Hanken Grotesk", system-ui, -apple-system, sans-serif;
+    --mono:"IBM Plex Mono", ui-monospace, "SFMono-Regular", monospace;
+  }
+  @media (prefers-color-scheme: dark){
+    :root:not([data-theme="light"]){
+      --bg:#111317; --surface:#181b20; --surface-2:#20242b;
+      --ink:#eef1f4; --ink-2:#a9b1bc; --ink-3:#79818c;
+      --line:#282d34; --line-strong:#39404a;
+      --amber:#f0a935; --red:#f0736f; --teal:#2fd4c0;
+      --shadow:0 1px 2px rgba(0,0,0,.3), 0 10px 30px -14px rgba(0,0,0,.6);
+    }
+  }
+  :root[data-theme="dark"]{
+    --bg:#111317; --surface:#181b20; --surface-2:#20242b;
+    --ink:#eef1f4; --ink-2:#a9b1bc; --ink-3:#79818c;
+    --line:#282d34; --line-strong:#39404a;
+    --amber:#f0a935; --red:#f0736f; --teal:#2fd4c0;
+    --shadow:0 1px 2px rgba(0,0,0,.3), 0 10px 30px -14px rgba(0,0,0,.6);
+  }
+
+  *{box-sizing:border-box}
+  body{background:var(--bg); color:var(--ink); font-family:var(--font);
+    line-height:1.5; -webkit-font-smoothing:antialiased;}
+  .wrap{max-width:760px; margin:0 auto; padding-inline:20px; padding-block:28px 64px;}
+  .mono{font-family:var(--mono); font-variant-numeric:tabular-nums;}
+  .eyebrow{font-family:var(--mono); text-transform:uppercase; letter-spacing:.14em;
+    font-size:11px; font-weight:500; color:var(--ink-3);}
+
+  /* header */
+  .top{display:flex; align-items:flex-start; justify-content:space-between; gap:16px; margin-bottom:26px;}
+  .brand{display:flex; flex-direction:column; gap:5px;}
+  .mark{display:inline-flex; align-items:center; gap:9px; font-weight:800; font-size:19px; letter-spacing:-.01em;}
+  .mark .dot{width:12px; height:12px; border-radius:3px; background:var(--amber);
+    box-shadow:0 0 0 3px color-mix(in srgb, var(--amber) 18%, transparent);}
+  .brand p{margin:0; color:var(--ink-2); font-size:13.5px; max-width:46ch;}
+  .tbtn{flex:none; width:38px; height:38px; border-radius:10px; border:1px solid var(--line);
+    background:var(--surface); color:var(--ink-2); cursor:pointer; display:grid; place-items:center;}
+  .tbtn:hover{border-color:var(--line-strong); color:var(--ink);}
+
+  /* input */
+  .panel{background:var(--surface); border:1px solid var(--line); border-radius:16px;
+    padding:16px; box-shadow:var(--shadow);}
+  .panel-head{display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:10px;}
+  .panel-head .eyebrow{color:var(--ink-2);}
+  .privacy{display:inline-flex; align-items:center; gap:6px; font-size:12px; color:var(--teal);
+    font-weight:600;}
+  .privacy svg{width:14px; height:14px;}
+  textarea{width:100%; min-height:118px; resize:vertical; border:1px solid var(--line);
+    background:var(--surface-2); color:var(--ink); border-radius:11px; padding:12px 13px;
+    font-family:var(--mono); font-size:12.5px; line-height:1.5;}
+  textarea:focus{outline:2px solid color-mix(in srgb, var(--amber) 55%, transparent); outline-offset:1px; border-color:transparent;}
+  .row{display:flex; flex-wrap:wrap; gap:10px; align-items:center; margin-top:12px;}
+  button.act{font-family:var(--font); font-weight:700; font-size:14px; border-radius:10px;
+    padding:10px 18px; cursor:pointer; border:1px solid transparent;}
+  .primary{background:var(--ink); color:var(--bg);}
+  .primary:hover{background:var(--amber); color:#fff;}
+  .ghost{background:transparent; color:var(--ink-2); border-color:var(--line);}
+  .ghost:hover{border-color:var(--line-strong); color:var(--ink);}
+  .hint{font-size:12.5px; color:var(--ink-3); margin-left:auto;}
+
+  /* dropzone */
+  .dropzone{border:1.5px dashed var(--line-strong); border-radius:13px; padding:11px; background:var(--surface-2);
+    transition:border-color .15s ease, background .15s ease;}
+  .dropzone.drag{border-color:var(--amber); background:color-mix(in srgb, var(--amber) 10%, var(--surface));}
+  .dz-head{display:flex; gap:9px; align-items:flex-start; font-size:12.5px; color:var(--ink-2); margin-bottom:9px; line-height:1.45;}
+  .dz-head svg{width:17px; height:17px; flex:none; margin-top:1px; color:var(--ink-3);}
+  .dz-head b{color:var(--ink); font-weight:600;}
+  .dz-head .muted{color:var(--ink-3);}
+  .filelink{color:var(--amber); font-weight:600; cursor:pointer; text-decoration:underline; text-underline-offset:2px;}
+  .filelink:hover{opacity:.8;}
+  .dropzone textarea{background:var(--surface);}
+  .reassure{display:flex; gap:8px; align-items:flex-start; margin-top:13px; padding-top:12px; border-top:1px solid var(--line);
+    font-size:12.5px; color:var(--ink-2); line-height:1.5;}
+  .reassure svg{width:16px; height:16px; flex:none; margin-top:1px; color:var(--teal);}
+  .reassure b{color:var(--ink); font-weight:600;}
+
+  /* results */
+  #results{margin-top:24px;}
+  .sample-note{display:flex; align-items:center; gap:8px; font-size:12.5px; color:var(--ink-2);
+    background:color-mix(in srgb, var(--amber) 9%, var(--surface)); border:1px solid color-mix(in srgb, var(--amber) 26%, var(--line));
+    border-radius:10px; padding:8px 12px; margin-bottom:18px;}
+  .sample-note b{color:var(--ink);}
+  .err{border:1px solid color-mix(in srgb, var(--red) 32%, var(--line)); background:color-mix(in srgb, var(--red) 8%, var(--surface));
+    border-radius:12px; padding:16px; color:var(--ink); font-size:14px;}
+  .err b{color:var(--red);}
+  .err code{font-family:var(--mono); font-size:12px; color:var(--ink-2);}
+
+  .hero{border:1px solid var(--line); border-radius:16px; overflow:hidden; box-shadow:var(--shadow); background:var(--surface);}
+  .hero-main{padding:22px 22px 20px; border-bottom:1px dashed var(--line-strong);}
+  .hero-main .eyebrow{color:var(--amber);}
+  .bignum{font-family:var(--mono); font-weight:600; letter-spacing:-.02em; color:var(--amber);
+    font-size:clamp(2.6rem, 9vw, 4.4rem); line-height:1.02; margin:6px 0 2px;}
+  .bignum .per{font-size:.34em; color:var(--ink-3); font-weight:500; letter-spacing:0;}
+  .annual{font-family:var(--mono); font-size:15px; color:var(--ink-2);}
+  .annual b{color:var(--ink);}
+  .readout{margin-top:12px; font-size:13.5px; color:var(--ink-2);}
+  .readout b{color:var(--ink); font-weight:700;}
+
+  .stats{display:grid; grid-template-columns:repeat(3,1fr); gap:1px; background:var(--line);}
+  .stat{background:var(--surface); padding:15px 16px;}
+  .stat .eyebrow{margin-bottom:7px;}
+  .stat .v{font-family:var(--mono); font-weight:600; font-size:22px; letter-spacing:-.01em;}
+  .stat .s{font-size:12px; color:var(--ink-3); margin-top:2px;}
+  .v.amber{color:var(--amber);} .v.red{color:var(--red);}
+
+  /* ledger table */
+  .ledger{margin-top:22px;}
+  .ledger h2{font-size:14px; font-weight:700; margin:0 0 3px;}
+  .ledger .sub{font-size:12.5px; color:var(--ink-3); margin:0 0 12px;}
+  .lwrap{overflow-x:auto; border:1px solid var(--line); border-radius:14px; background:var(--surface);}
+  table{width:100%; border-collapse:collapse; min-width:520px;}
+  thead th{font-family:var(--mono); text-transform:uppercase; letter-spacing:.08em; font-size:10px;
+    font-weight:500; color:var(--ink-3); text-align:right; padding:11px 14px; border-bottom:1px solid var(--line); background:var(--surface-2);}
+  thead th.l{text-align:left;}
+  tbody td{padding:11px 14px; border-bottom:1px solid var(--line); font-size:13px; text-align:right;
+    font-family:var(--mono); font-variant-numeric:tabular-nums; color:var(--ink-2);}
+  tbody tr:last-child td{border-bottom:0;}
+  td.name{text-align:left; font-family:var(--font);}
+  td.name .n{font-weight:600; color:var(--ink); display:block; line-height:1.25;}
+  td.name .sku{font-family:var(--mono); font-size:11px; color:var(--ink-3);}
+  td.tot{color:var(--ink); font-weight:600;}
+  tbody tr.worst td{background:color-mix(in srgb, var(--amber) 7%, var(--surface));}
+  .aged-flag{color:var(--red); font-weight:600;}
+
+  .method{margin-top:18px; font-size:11.5px; color:var(--ink-3); line-height:1.55;}
+  .method b{color:var(--ink-2);}
+
+  /* cta */
+  .cta{margin-top:34px; border:1px solid var(--line); border-radius:16px; padding:20px 22px;
+    background:linear-gradient(180deg, color-mix(in srgb, var(--teal) 6%, var(--surface)), var(--surface));}
+  .cta .eyebrow{color:var(--teal);}
+  .cta h3{margin:7px 0 6px; font-size:17px; font-weight:800; letter-spacing:-.01em;}
+  .cta p{margin:0; color:var(--ink-2); font-size:13.5px; max-width:58ch;}
+  .cta .em{color:var(--ink); font-weight:600;}
+
+  .foot{margin-top:26px; font-size:11.5px; color:var(--ink-3); text-align:center;}
+
+  @media (max-width:560px){
+    .stats{grid-template-columns:1fr;}
+    .hint{margin-left:0; width:100%;}
+  }
+  @media (prefers-reduced-motion:no-preference){
+    #results{transition:opacity .18s ease;}
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="top">
+    <div class="brand">
+      <span class="mark"><span class="dot"></span>Overstock&nbsp;Bleed</span>
+      <p>Paste an Amazon FBA report and see what your excess inventory is quietly paying Amazon every month.</p>
+    </div>
+    <button class="tbtn" id="theme" title="Toggle light / dark" aria-label="Toggle theme">
+      <svg viewBox="0 0 20 20" fill="none" width="18" height="18"><path id="themeIcon" d="M10 2.6v1.4M10 16v1.4M4.6 4.6l1 1M14.4 14.4l1 1M2.6 10H4M16 10h1.4M4.6 15.4l1-1M14.4 5.6l1-1M13 10a3 3 0 1 1-6 0 3 3 0 0 1 6 0Z" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+    </button>
+  </div>
+
+  <div class="panel">
+    <div class="panel-head">
+      <span class="eyebrow">Your FBA report</span>
+      <span class="privacy"><svg viewBox="0 0 20 20" fill="none"><path d="M10 2.5 4 5v4.2c0 3.5 2.4 6.4 6 8.3 3.6-1.9 6-4.8 6-8.3V5l-6-2.5Z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/><path d="M7.5 10 9.3 12l3.5-3.8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>Private &mdash; stays on your device</span>
+    </div>
+    <div class="dropzone" id="drop">
+      <div class="dz-head">
+        <svg viewBox="0 0 20 20" fill="none" aria-hidden="true"><path d="M10 13V4m0 0L6.5 7.5M10 4l3.5 3.5M3.5 12.5v2A1.5 1.5 0 0 0 5 16h10a1.5 1.5 0 0 0 1.5-1.5v-2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        <span>Drop your <b>Storage Fees</b> or <b>Inventory Age</b> report here <span class="muted">(.csv or .txt)</span>, <label for="file" class="filelink">choose a file</label>, or paste it below.</span>
+      </div>
+      <textarea id="input" spellcheck="false" aria-label="Paste your Amazon FBA report"></textarea>
+      <input type="file" id="file" accept=".csv,.tsv,.txt,.tab" hidden>
+    </div>
+    <div class="row">
+      <button class="act primary" id="analyze">Check my bleed</button>
+      <button class="act ghost" id="sample">Load sample data</button>
+      <span class="hint">Get these in Seller Central &rarr; Reports &rarr; Fulfillment</span>
+    </div>
+    <p class="reassure"><svg viewBox="0 0 20 20" fill="none"><path d="M10 2.5 4 5v4.2c0 3.5 2.4 6.4 6 8.3 3.6-1.9 6-4.8 6-8.3V5l-6-2.5Z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/><path d="M7.5 10 9.3 12l3.5-3.8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg><span><b>Nothing is uploaded.</b> Your report is read and crunched right here in your browser &mdash; no account, no server, no copy kept. Close the tab and it&rsquo;s gone.</span></p>
+  </div>
+
+  <div id="results" aria-live="polite"></div>
+
+  <div class="cta">
+    <span class="eyebrow">Stop checking this by hand</span>
+    <!-- Replace the line below with your real link when you have one (site / app download). -->
+    <h3>This is one number Insighta watches for you.</h3>
+    <p><span class="em">Insighta</span> is a private desktop app that tracks your FBA inventory, forecasts demand per SKU, and tells you what to reorder and what to clear <span class="em">before</span> the 181-day surcharge hits &mdash; ranked by dollars at risk. Like this page, your data never leaves your computer.</p>
+  </div>
+
+  <p class="foot">Not affiliated with Amazon. Fee rates are approximate and change over time.</p>
+</div>
+
+<script>
+(function(){
+  "use strict";
+  // --- Amazon FBA fee constants (mirrors the desktop app's fba.js) -----------
+  var STORAGE_OFFPEAK = 0.78;   // $/cu ft / mo, standard-size, Jan-Sep
+  var STORAGE_PEAK    = 2.40;   // $/cu ft / mo, standard-size, Oct-Dec
+  var AGED_RATE       = 1.50;   // $/cu ft / mo, representative 181+ surcharge
+  var AGED_DAY        = 181;
+  function storageRate(){ return (new Date()).getMonth() >= 9 ? STORAGE_PEAK : STORAGE_OFFPEAK; }
+
+  // --- column aliases (ported from the app's importer) -----------------------
+  var ALIASES = {
+    sku:   ["product id (sku)","sku","seller-sku","seller sku","merchant-sku","msku","product id","fnsku","asin"],
+    name:  ["product name","product-name","title","item-name","item name","name","product title"],
+    fee:   ["estimated-monthly-storage-fee","estimated monthly storage fee","monthly-storage-fee","estimated_monthly_storage_fee","estimated-storage-cost-next-month"],
+    vol:   ["item-volume","item volume","volume","measurement-units-volume"],
+    qty:   ["afn-fulfillable-quantity","average-quantity-on-hand","quantity","available","on hand","on_hand","sellable quantity","fulfillable quantity","qty","units"]
+  };
+
+  function num(x){
+    if(x==null) return null;
+    var v = parseFloat(String(x).replace(/[$,\s]/g,""));
+    return isFinite(v) ? v : null;
+  }
+  function splitLine(line, delim){
+    if(delim === "\t") return line.split("\t");
+    // CSV with basic quote handling
+    var out=[], cur="", q=false;
+    for(var i=0;i<line.length;i++){
+      var c=line[i];
+      if(q){ if(c=='"'){ if(line[i+1]=='"'){cur+='"';i++;} else q=false; } else cur+=c; }
+      else { if(c=='"') q=true; else if(c==",") {out.push(cur);cur="";} else cur+=c; }
+    }
+    out.push(cur); return out;
+  }
+  function parseTable(text){
+    var lines = text.replace(/\r/g,"").split("\n").filter(function(l){return l.trim().length;});
+    if(lines.length < 2) return null;
+    var delim = lines[0].indexOf("\t")>=0 ? "\t" : ",";
+    var headers = splitLine(lines[0], delim).map(function(h){return h.trim();});
+    var lower = headers.map(function(h){return h.toLowerCase();});
+    var rows = [];
+    for(var i=1;i<lines.length;i++){
+      var f = splitLine(lines[i], delim);
+      if(f.length===1 && !f[0].trim()) continue;
+      rows.push(f);
+    }
+    return {headers:headers, lower:lower, rows:rows};
+  }
+  function findCol(lower, names){
+    for(var n=0;n<names.length;n++){ var idx=lower.indexOf(names[n]); if(idx>=0) return idx; }
+    return -1;
+  }
+  function agedCols(lower){
+    var cols=[];
+    for(var i=0;i<lower.length;i++){
+      var m = lower[i].match(/inv-age-(\d+)/);
+      if(m && parseInt(m[1],10) >= AGED_DAY) cols.push(i);
+    }
+    return cols;
+  }
+
+  var money = function(v){
+    var n = Math.round(v);
+    return "$" + n.toLocaleString("en-US");
+  };
+  var money2 = function(v){ return "$" + v.toFixed(2); };
+  var intf = function(v){ return Math.round(v).toLocaleString("en-US"); };
+
+  function analyze(text, isSample){
+    var res = document.getElementById("results");
+    var t = parseTable(text);
+    if(!t){ return showError(res, "That doesn't look like a report yet. Paste the whole thing &mdash; the header row plus the data rows."); }
+
+    var ci = {
+      sku: findCol(t.lower, ALIASES.sku),
+      name: findCol(t.lower, ALIASES.name),
+      fee: findCol(t.lower, ALIASES.fee),
+      vol: findCol(t.lower, ALIASES.vol),
+      qty: findCol(t.lower, ALIASES.qty)
+    };
+    var aged = agedCols(t.lower);
+    if(ci.fee<0 && ci.vol<0 && aged.length===0 && ci.qty<0){
+      return showError(res,
+        "Couldn't find any Amazon storage or inventory-age columns. This tool reads your <b>FBA Storage Fees</b> report (looks for <code>estimated-monthly-storage-fee</code>, <code>item-volume</code>) or your <b>FBA Inventory Age</b> report (looks for <code>inv-age-181...</code> columns). Paste one of those.");
+    }
+
+    var rate = storageRate();
+    var items = [], totStorage=0, totSur=0, totAged=0, modeledAny=false;
+    for(var r=0;r<t.rows.length;r++){
+      var row = t.rows[r];
+      var fee = ci.fee>=0 ? num(row[ci.fee]) : null;
+      var vol = ci.vol>=0 ? num(row[ci.vol]) : null;
+      var qty = ci.qty>=0 ? num(row[ci.qty]) : null;
+      var agedU = 0;
+      for(var a=0;a<aged.length;a++){ var av=num(row[aged[a]]); if(av) agedU+=av; }
+
+      var storageMo, modeled=false;
+      if(fee!=null && fee>=0){ storageMo = fee; }
+      else if(vol!=null && vol>0 && qty!=null && qty>0){ storageMo = vol*qty*rate; modeled=true; }
+      else { storageMo = 0; }
+
+      var surcharge = (vol!=null && vol>0 && agedU>0) ? vol*AGED_RATE*agedU : 0;
+      var monthly = storageMo + surcharge;
+      if(monthly<=0 && agedU<=0) continue; // skip empty rows
+
+      if(modeled) modeledAny=true;
+      totStorage += storageMo; totSur += surcharge; totAged += agedU;
+      items.push({
+        name: (ci.name>=0 && row[ci.name] ? String(row[ci.name]).trim() : ""),
+        sku: (ci.sku>=0 && row[ci.sku] ? String(row[ci.sku]).trim() : ""),
+        storageMo: storageMo, surcharge: surcharge, aged: agedU, monthly: monthly, modeled: modeled
+      });
+    }
+
+    if(!items.length){ return showError(res, "Parsed the report, but every row came out to $0 in fees. If this is the right report, your inventory isn't bleeding &mdash; nice."); }
+
+    items.sort(function(a,b){ return b.monthly - a.monthly; });
+    var totMonthly = totStorage + totSur;
+    render(res, {
+      items: items, totMonthly: totMonthly, totStorage: totStorage, totSur: totSur,
+      totAged: totAged, skuCount: items.length, modeled: modeledAny, hasAged: (aged.length>0 || totSur>0),
+      isSample: isSample
+    });
+  }
+
+  function showError(res, html){
+    res.innerHTML = '<div class="err">' + html + '</div>';
+  }
+
+  function render(res, d){
+    var worstCut = Math.max(d.items[0].monthly * 0.6, d.totMonthly/d.skuCount*2);
+    var top = d.items.slice(0, 10);
+
+    var html = "";
+    if(d.isSample){
+      html += '<div class="sample-note"><b>Sample data.</b> This is an example so you can see how it reads &mdash; paste your own report above to check your real numbers.</div>';
+    }
+
+    // hero
+    html += '<div class="hero"><div class="hero-main">'
+      + '<div class="eyebrow">Your overstock is costing you</div>'
+      + '<div class="bignum">' + money(d.totMonthly) + '<span class="per"> / month</span></div>'
+      + '<div class="annual">&asymp; <b>' + money(d.totMonthly*12) + '</b> a year going to Amazon fees</div>'
+      + '<div class="readout">Across <b>' + intf(d.skuCount) + '</b> SKU' + (d.skuCount==1?"":"s")
+      + (d.totAged>0 ? ', with <b>' + intf(d.totAged) + '</b> unit' + (d.totAged==1?"":"s") + ' already past the <b>181-day</b> surcharge line.' : '.')
+      + '</div></div>';
+
+    // stats
+    html += '<div class="stats">'
+      + '<div class="stat"><div class="eyebrow">Storage fees</div><div class="v amber">' + money(d.totStorage) + '</div><div class="s">per month</div></div>'
+      + '<div class="stat"><div class="eyebrow">Aged surcharge</div><div class="v red">' + (d.hasAged? money(d.totSur) : "&mdash;") + '</div><div class="s">' + (d.hasAged? "per month, 181d+" : "add your Age report") + '</div></div>'
+      + '<div class="stat"><div class="eyebrow">Units past 181d</div><div class="v">' + (d.hasAged? intf(d.totAged) : "&mdash;") + '</div><div class="s">' + (d.hasAged? "at surcharge risk" : "add your Age report") + '</div></div>'
+      + '</div></div>';
+
+    // ledger
+    html += '<div class="ledger"><h2>Where it&rsquo;s bleeding</h2>'
+      + '<p class="sub">Your ' + (top.length<d.items.length? ("top "+top.length+" of "+d.items.length) : d.items.length) + ' worst SKUs by monthly fee. Draw these down first.</p>'
+      + '<div class="lwrap"><table><thead><tr>'
+      + '<th class="l">Product</th><th>Storage /mo</th><th>Units 181d+</th><th>Surcharge /mo</th><th>Total /mo</th>'
+      + '</tr></thead><tbody>';
+    for(var i=0;i<top.length;i++){
+      var it = top[i];
+      var nm = it.name || it.sku || "(unnamed SKU)";
+      html += '<tr' + (it.monthly>=worstCut?' class="worst"':'') + '>'
+        + '<td class="name"><span class="n">' + esc(nm) + '</span>' + (it.sku? '<span class="sku">'+esc(it.sku)+'</span>':'') + '</td>'
+        + '<td>' + money2(it.storageMo) + (it.modeled?'*':'') + '</td>'
+        + '<td>' + (it.aged>0 ? '<span class="aged-flag">'+intf(it.aged)+'</span>' : '<span style="color:var(--ink-3)">0</span>') + '</td>'
+        + '<td>' + (it.surcharge>0 ? money2(it.surcharge) : '<span style="color:var(--ink-3)">&mdash;</span>') + '</td>'
+        + '<td class="tot">' + money2(it.monthly) + '</td>'
+        + '</tr>';
+    }
+    html += '</tbody></table></div>';
+
+    html += '<p class="method">'
+      + (d.modeled ? '<b>*</b> Storage estimated from item volume &times; quantity &times; the current standard-size rate ('
+        + money2(storageRate()) + '/cu ft this month), because your report didn&rsquo;t give a fee for that SKU. ' : '')
+      + '<b>How it&rsquo;s figured:</b> storage uses your report&rsquo;s own <b>estimated-monthly-storage-fee</b> when present; the aged-inventory surcharge is estimated at '
+      + money2(AGED_RATE) + '/cu ft on units past 181 days. Standard-size, US, approximate &mdash; Amazon revises rates and oversize differs.'
+      + '</p></div>';
+
+    res.innerHTML = html;
+  }
+
+  function esc(s){ return String(s).replace(/[&<>"]/g, function(c){ return {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]; }); }
+
+  // --- sample data (illustrative; real Amazon columns) -----------------------
+  var SAMPLE = [
+    "sku,product-name,estimated-monthly-storage-fee,item-volume,average-quantity-on-hand,inv-age-181-to-270-days,inv-age-271-to-365-days,inv-age-365-plus-days",
+    "INFL-PADDLE-010,Inflatable Paddle Board,238.50,3.90,44,8,3,1",
+    "WINTER-PARKA-058,Winter Parka Men's,176.20,1.10,220,10,4,2",
+    "LED-LIGHTS-018,Christmas LED String Lights,168.40,0.25,980,0,0,1",
+    "COOLER-40L-008,Cooler Box 40L,154.10,2.60,70,12,6,0",
+    "SUNSCREEN-007,Sunscreen SPF 50,60.30,0.08,2100,48,30,28",
+    "THERMAL-BASE-002,Thermal Base Layer,52.80,0.22,640,40,25,34",
+    "CASHMERE-SCARF-005,Premium Cashmere Scarf,44.90,0.18,380,9,6,4",
+    "ORNAMENT-24PC-020,Ornament Set 24pc,38.60,0.30,410,30,20,23",
+    "TREE-SKIRT-021,Tree Skirt,33.20,0.50,190,25,18,47",
+    "YOGA-MAT-030,Yoga Mat,22.40,0.90,96,0,0,0",
+    "SWIM-GOGGLES-009,Swim Goggles,18.70,0.05,1400,60,45,67",
+    "PHONE-CASE-072,Phone Case,6.10,0.02,900,0,0,0"
+  ].join("\n");
+
+  var input = document.getElementById("input");
+  document.getElementById("analyze").addEventListener("click", function(){
+    analyze(input.value, false);
+  });
+  document.getElementById("sample").addEventListener("click", function(){
+    input.value = SAMPLE; analyze(SAMPLE, true);
+    input.scrollTop = 0;
+  });
+
+  // --- drag-and-drop / file pick (read locally, never uploaded) --------------
+  var drop = document.getElementById("drop");
+  var fileInput = document.getElementById("file");
+  function readFile(file){
+    if(!file) return;
+    var reader = new FileReader();
+    reader.onload = function(e){ input.value = e.target.result; analyze(input.value, false); };
+    reader.onerror = function(){ showError(document.getElementById("results"), "Couldn&rsquo;t read that file. Try pasting the report contents instead."); };
+    reader.readAsText(file);
+  }
+  // stop the browser from navigating away when a file is dropped anywhere
+  window.addEventListener("dragover", function(e){ e.preventDefault(); });
+  window.addEventListener("drop", function(e){ e.preventDefault(); });
+  ["dragenter","dragover"].forEach(function(ev){
+    drop.addEventListener(ev, function(e){ e.preventDefault(); drop.classList.add("drag"); });
+  });
+  ["dragleave","dragend"].forEach(function(ev){
+    drop.addEventListener(ev, function(e){ if(e.target === drop) drop.classList.remove("drag"); });
+  });
+  drop.addEventListener("drop", function(e){
+    e.preventDefault(); drop.classList.remove("drag");
+    var f = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
+    readFile(f);
+  });
+  fileInput.addEventListener("change", function(e){ readFile(e.target.files[0]); e.target.value = ""; });
+
+  // theme toggle
+  var root = document.documentElement;
+  try{ var saved = localStorage.getItem("ob-theme"); if(saved) root.setAttribute("data-theme", saved); }catch(e){}
+  document.getElementById("theme").addEventListener("click", function(){
+    var cur = root.getAttribute("data-theme");
+    var next = cur === "dark" ? "light" : (cur === "light" ? "dark" : (matchMedia("(prefers-color-scheme: dark)").matches ? "light" : "dark"));
+    root.setAttribute("data-theme", next);
+    try{ localStorage.setItem("ob-theme", next); }catch(e){}
+  });
+
+  // open in a working state on the sample so the first frame shows what it does
+  input.value = SAMPLE;
+  analyze(SAMPLE, true);
+})();
+</script>
+</body>
+</html>
