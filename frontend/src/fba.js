@@ -9,7 +9,7 @@
 // oversize differs - so anything modeled is labeled "est." and these constants
 // are meant to be easy to update.
 
-const STORAGE_OFFPEAK = 0.87; // $/cu ft / mo, standard-size, Jan-Sep
+const STORAGE_OFFPEAK = 0.78; // $/cu ft / mo, standard-size, Jan-Sep
 const STORAGE_PEAK = 2.4; // $/cu ft / mo, standard-size, Oct-Dec (peak)
 const AGED_RATE = 1.5; // $/cu ft / mo, representative 181+ day aged-inventory surcharge
 const AGED_DAY = 181; // day a unit enters the aged-surcharge band
